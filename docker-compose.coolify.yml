@@ -2,7 +2,10 @@ version: "3.8"
 
 services:
   web:
-    image: ${CANVAS_BASE_IMAGE}
+    image: ${CANVAS_IMAGE_NAME:-canvas-lms}
+    build: &canvas-build
+      context: .
+      dockerfile: Dockerfile.production
     environment: &canvas-env
       RAILS_ENV: production
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
@@ -26,7 +29,8 @@ services:
       - tmp:/usr/src/app/tmp
 
   jobs:
-    image: ${CANVAS_BASE_IMAGE}
+    image: ${CANVAS_IMAGE_NAME:-canvas-lms}
+    build: *canvas-build
     command: bundle exec script/delayed_job run
     environment: *canvas-env
     depends_on:
@@ -39,7 +43,8 @@ services:
       - tmp:/usr/src/app/tmp
 
   init:
-    image: ${CANVAS_BASE_IMAGE}
+    image: ${CANVAS_IMAGE_NAME:-canvas-lms}
+    build: *canvas-build
     command: /usr/src/app/script/coolify/init.sh
     environment: *canvas-env
     depends_on:
