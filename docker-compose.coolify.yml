@@ -1,0 +1,73 @@
+version: "3.8"
+
+services:
+  web:
+    image: ${CANVAS_BASE_IMAGE}
+    environment: &canvas-env
+      RAILS_ENV: production
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      CANVAS_DATABASE_HOST: postgres
+      CANVAS_DATABASE_USERNAME: ${CANVAS_DATABASE_USERNAME:-postgres}
+      CANVAS_DATABASE_PRODUCTION: ${CANVAS_DATABASE_PRODUCTION:-canvas_production}
+      CANVAS_DOMAIN: ${CANVAS_DOMAIN}
+      CANVAS_DOMAIN_SSL: ${CANVAS_DOMAIN_SSL:-true}
+      CANVAS_FILES_DOMAIN: ${CANVAS_FILES_DOMAIN:-}
+      CANVAS_PRODUCT_NAME: ${CANVAS_PRODUCT_NAME:-}
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "${CANVAS_PORT:-3000}:80"
+    volumes:
+      - brandable_css:/usr/src/app/public/dist/brandable_css
+      - file_store:/usr/src/app/tmp/files
+      - log:/usr/src/app/log
+      - tmp:/usr/src/app/tmp
+
+  jobs:
+    image: ${CANVAS_BASE_IMAGE}
+    command: bundle exec script/delayed_job run
+    environment: *canvas-env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - brandable_css:/usr/src/app/public/dist/brandable_css
+      - file_store:/usr/src/app/tmp/files
+      - log:/usr/src/app/log
+      - tmp:/usr/src/app/tmp
+
+  init:
+    image: ${CANVAS_BASE_IMAGE}
+    command: /usr/src/app/script/coolify/init.sh
+    environment: *canvas-env
+    depends_on:
+      - postgres
+      - redis
+    restart: "no"
+    volumes:
+      - brandable_css:/usr/src/app/public/dist/brandable_css
+      - file_store:/usr/src/app/tmp/files
+      - log:/usr/src/app/log
+      - tmp:/usr/src/app/tmp
+
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:alpine
+    volumes:
+      - redis_data:/data
+
+volumes:
+  brandable_css: {}
+  file_store: {}
+  log: {}
+  pg_data: {}
+  redis_data: {}
+  tmp: {}
