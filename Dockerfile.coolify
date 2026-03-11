@@ -68,6 +68,10 @@ COPY --chown=docker:docker . /usr/src/app
 RUN mkdir -p tmp/files
 ENV COMPILE_ASSETS_BRAND_CONFIGS=0
 ENV COMPILE_ASSETS_NPM_INSTALL=0
+ENV CANVAS_BUILD_CONCURRENCY=2
+ENV JS_BUILD_NO_FALLBACK=1
+ENV SKIP_SOURCEMAPS=1
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN unset RUBY && bundle config --global build.nokogiri --use-system-libraries && \
   bundle config --global build.ffi --enable-system-libffi && \
   bundle install
