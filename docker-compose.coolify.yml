@@ -5,7 +5,7 @@ services:
     image: ${CANVAS_IMAGE_NAME:-canvas-lms}
     build: &canvas-build
       context: .
-      dockerfile: Dockerfile.production
+      dockerfile: Dockerfile.coolify
     environment: &canvas-env
       RAILS_ENV: production
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
