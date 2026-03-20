@@ -26,7 +26,7 @@ module Lti
     class DynamicRegistrationController < ApplicationController
       REGISTRATION_TOKEN_EXPIRATION = 1.hour
 
-      before_action :require_user, except: %i[create update show_configuration]
+      skip_before_action :require_user, only: %i[create update show_configuration]
       before_action :require_account, except: %i[create update show_configuration]
       before_action :require_site_admin_modify_permission, only: %w[registration_token update_registration_overlay]
 
@@ -185,6 +185,12 @@ module Lti
         end
 
         ims_registration = Lti::IMS::Registration.find(params[:registration_id])
+
+        # Verify that the developer key from the access token matches the registration's developer key
+        unless validation_result[:developer_key].global_id == ims_registration.developer_key.global_id
+          return render status: :forbidden, json: { errorMessage: "You are not authorized to access this registration" }
+        end
+
         root_deployment = ContextExternalTool.find_by(account: ims_registration.root_account, lti_registration: ims_registration.lti_registration_id)
         render_registration(ims_registration, ims_registration.developer_key, root_deployment)
       end
@@ -257,7 +263,7 @@ module Lti
 
         Schemas::Lti::IMS::OidcRegistration.to_model_attrs(params.to_unsafe_h) =>
           { errors:, registration_attrs: }
-        return render status: :unprocessable_entity, json: { errors: } if errors.present?
+        return render status: :unprocessable_content, json: { errors: } if errors.present?
 
         if jwt["existing_registration"].present?
           registration = Lti::Registration.find(jwt["existing_registration"])
@@ -273,6 +279,14 @@ module Lti
               accepted_at: nil,
               rejected_at: nil
             )
+
+            # Auto-accept if the registration attributes match
+            if registration_attrs_match?(registration.ims_registration, registration_attrs)
+              Lti::ApplyRegistrationUpdateRequestService.call(
+                registration_update_request:,
+                applied_by: @current_user
+              )
+            end
 
             root_deployment = ContextExternalTool.find_by(account: root_account, lti_registration: registration)
 
@@ -340,8 +354,9 @@ module Lti
         unless registration.root_account.feature_enabled?(:lti_dr_registrations_update)
           respond_to do |format|
             format.html { render "shared/errors/404_message", status: :not_found }
-            format.json { render_error(:not_found, "The specified resource does not exist.", status: :not_found) }
+            format.json { respond_with_error(:not_found, "The specified resource does not exist.") }
           end
+          return
         end
 
         validation_result = Lti::TokenValidationService.verify_developer_key_access_token_and_scopes(
@@ -353,11 +368,16 @@ module Lti
           return render status: validation_result[:status], json: { errorMessage: validation_result[:error] }
         end
 
+        # Verify that the developer key from the access token matches the registration's developer key
+        unless validation_result[:developer_key].global_id == ims_registration.developer_key.global_id
+          return render status: :forbidden, json: { errorMessage: "You are not authorized to update this registration" }
+        end
+
         # create a registration update request based on the body
         # of the request and the registration id
         Schemas::Lti::IMS::OidcRegistration.to_model_attrs(params.to_unsafe_h) =>
           { errors:, registration_attrs: }
-        return render status: :unprocessable_entity, json: { errors: } if errors.present?
+        return render status: :unprocessable_content, json: { errors: } if errors.present?
 
         if registration.present?
           # Create an LTI RegistrationUpdateRequest
@@ -371,6 +391,14 @@ module Lti
             accepted_at: nil,
             rejected_at: nil
           )
+
+          # Auto-accept if the registration attributes match
+          if registration_attrs_match?(ims_registration, registration_attrs)
+            Lti::ApplyRegistrationUpdateRequestService.call(
+              registration_update_request:,
+              applied_by: @current_user
+            )
+          end
 
           root_deployment = ContextExternalTool.find_by(account: registration.root_account, developer_key: registration.developer_key)
 
@@ -436,6 +464,32 @@ module Lti
                json: {
                  errorMessage: message
                }
+      end
+
+      def registration_attrs_match?(existing_registration, new_attrs)
+        comparable_attrs = %w[client_name redirect_uris initiate_login_uri jwks_uri logo_uri scopes]
+
+        existing_registration.slice(comparable_attrs)
+        new_attrs.slice(comparable_attrs)
+        attrs_match = comparable_attrs.all? do |attr|
+          first = existing_registration[attr]
+          second = new_attrs[attr]
+
+          # If the attribute we're look at is an array, sort it first before comparison
+          if existing_registration[attr].is_a? Array
+            first = existing_registration[attr].sort
+            second = new_attrs[attr].sort
+          end
+
+          first == second
+        end
+
+        config_match = Hashdiff.diff(
+          existing_registration.lti_tool_configuration.deep_stringify_keys,
+          new_attrs["lti_tool_configuration"].deep_stringify_keys
+        ).empty?
+
+        attrs_match && config_match
       end
     end
   end

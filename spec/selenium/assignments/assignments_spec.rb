@@ -81,14 +81,14 @@ describe "assignments" do
     end
 
     context "save and publish button" do
-      def create_assignment(publish = true, params = { name: "Test Assignment" })
+      def create_assignment(params = { name: "Test Assignment" }, publish: true)
         @assignment = @course.assignments.create(params)
         @assignment.unpublish unless publish
         get "/courses/#{@course.id}/assignments/#{@assignment.id}/edit"
       end
 
       it "can save and publish an assignment", priority: "1" do
-        create_assignment false
+        create_assignment(publish: false)
 
         expect(f("#assignment-draft-state")).to be_displayed
 
@@ -1159,8 +1159,8 @@ describe "assignments" do
         expect(f("#assignment_annotated_document_info")).to be_displayed
 
         # select attachment from file explorer
-        fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/button').click
-        fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/ul/li/button').click
+        f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child > button').click
+        f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child [role="group"] [role="treeitem"] button').click
 
         # set usage rights
         f("#usageRightSelector").click
@@ -1191,8 +1191,8 @@ describe "assignments" do
         expect(f("#assignment_annotated_document_info")).to be_displayed
 
         # select attachment from file explorer
-        fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/button').click
-        fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/ul/li/button').click
+        f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child > button').click
+        f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child [role="group"] [role="treeitem"] button').click
 
         # set usage rights
         f("#usageRightSelector").click
@@ -1233,8 +1233,8 @@ describe "assignments" do
             expect(f("#online_submission_types\\[student_annotation\\]_errors")).to include_text("This submission type requires a file upload")
 
             # select attachment from file explorer
-            fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/button').click
-            fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/ul/li/button').click
+            f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child > button').click
+            f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child [role="group"] [role="treeitem"] button').click
 
             expect(f("#online_submission_types\\[student_annotation\\]_errors")).not_to include_text("This submission type requires a file upload")
           end
@@ -1268,8 +1268,8 @@ describe "assignments" do
             wait_for_ajaximations
 
             # select attachment from file explorer
-            fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/button').click
-            fxpath('//*[@id="annotated_document_chooser_container"]/div/div[1]/ul/li[1]/ul/li/button').click
+            f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child > button').click
+            f('#annotated_document_chooser_container [role="tree"] > [role="treeitem"]:first-child [role="group"] [role="treeitem"] button').click
 
             submit_assignment_form
             wait_for_ajaximations
@@ -1584,7 +1584,7 @@ describe "assignments" do
 
         get "/courses/#{@course.id}/assignments/new"
         wait_for_ajaximations
-        expect(f("#assignment_post_to_sis")).to_not be_nil
+        expect(f("#assignment_post_to_sis")).not_to be_nil
       end
 
       it "shows when post_grades lti tool installed", priority: "1" do
@@ -1592,7 +1592,7 @@ describe "assignments" do
 
         get "/courses/#{@course.id}/assignments/new"
         wait_for_ajaximations
-        expect(f("#assignment_post_to_sis")).to_not be_nil
+        expect(f("#assignment_post_to_sis")).not_to be_nil
       end
 
       it "does not show when post_grades lti tool not installed", priority: "1" do

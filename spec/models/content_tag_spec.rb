@@ -770,6 +770,87 @@ describe ContentTag do
         expect(ContentTag.visible_to_students_in_course_with_da([@student.id], [@course.id])).not_to include(@tag)
       end
     end
+
+    context "external urls in modules with section overrides" do
+      before do
+        @other_student = user_factory(active_all: true)
+        @course.enroll_student(@other_student, enrollment_state: "active")
+
+        @restricted_module = @course.context_modules.create!(name: "restricted module")
+        @restricted_module.assignment_overrides.create!(set: @section)
+
+        @tag = @restricted_module.add_item({
+                                             type: "ExternalUrl",
+                                             title: "external url",
+                                             url: "http://example.com",
+                                             new_tab: false
+                                           })
+      end
+
+      it "does not include external url items from modules not visible to student" do
+        expect(ContentTag.visible_to_students_in_course_with_da([@other_student.id], [@course.id])).not_to include(@tag)
+      end
+
+      it "includes external url items from modules visible to student" do
+        expect(ContentTag.visible_to_students_in_course_with_da([@student.id], [@course.id])).to include(@tag)
+      end
+    end
+
+    context "external tools in modules with section overrides" do
+      before do
+        @other_student = user_factory(active_all: true)
+        @course.enroll_student(@other_student, enrollment_state: "active")
+
+        @restricted_module = @course.context_modules.create!(name: "restricted module")
+        @restricted_module.assignment_overrides.create!(set: @section)
+
+        tool = @course.context_external_tools.create!(
+          name: "test tool",
+          url: "http://example.com/tool",
+          consumer_key: "key",
+          shared_secret: "secret"
+        )
+        @tag = @restricted_module.add_item({
+                                             type: "context_external_tool",
+                                             id: tool.id,
+                                             url: tool.url
+                                           })
+      end
+
+      it "does not include external tool items from modules not visible to student" do
+        expect(ContentTag.visible_to_students_in_course_with_da([@other_student.id], [@course.id])).not_to include(@tag)
+      end
+
+      it "includes external tool items from modules visible to student" do
+        expect(ContentTag.visible_to_students_in_course_with_da([@student.id], [@course.id])).to include(@tag)
+      end
+    end
+
+    context "file attachments in modules with section overrides" do
+      before do
+        @other_student = user_factory(active_all: true)
+        @course.enroll_student(@other_student, enrollment_state: "active")
+
+        @restricted_module = @course.context_modules.create!(name: "restricted module")
+        @restricted_module.assignment_overrides.create!(set: @section)
+
+        attachment = Attachment.create!(
+          filename: "test.txt",
+          uploaded_data: StringIO.new("test"),
+          folder: Folder.root_folders(@course).first,
+          context: @course
+        )
+        @tag = @restricted_module.add_item({ type: "attachment", id: attachment.id })
+      end
+
+      it "does not include file attachment items from modules not visible to student" do
+        expect(ContentTag.visible_to_students_in_course_with_da([@other_student.id], [@course.id])).not_to include(@tag)
+      end
+
+      it "includes file attachment items from modules visible to student" do
+        expect(ContentTag.visible_to_students_in_course_with_da([@student.id], [@course.id])).to include(@tag)
+      end
+    end
   end
 
   describe "destroy" do
@@ -831,7 +912,7 @@ describe ContentTag do
       )
       tag = assignment.external_tool_tag
 
-      expect(SubmissionLifecycleManager).to_not receive(:recompute).with(assignment)
+      expect(SubmissionLifecycleManager).not_to receive(:recompute).with(assignment)
 
       tag.destroy!
     end
@@ -843,7 +924,7 @@ describe ContentTag do
       outcome_link = ContentTag.create!(content: outcome, context: account)
       outcome_links = ContentTag.for_context(account)
       expect(outcome_links).not_to be_empty
-      expect(outcome_links.find { |link| link.id == outcome_link.id }).to_not be_nil
+      expect(outcome_links.find { |link| link.id == outcome_link.id }).not_to be_nil
 
       outcome_link.destroy
       outcome_links = ContentTag.active.for_context(account)
@@ -877,7 +958,7 @@ describe ContentTag do
     end
 
     it "does not run the due date cacher when saved if the content is Quizzes 2 but the context is a course" do
-      expect(SubmissionLifecycleManager).to_not receive(:recompute)
+      expect(SubmissionLifecycleManager).not_to receive(:recompute)
 
       ContentTag.create!(content: tool, url: tool.url, context: @course)
     end
@@ -893,7 +974,7 @@ describe ContentTag do
 
       assignment = @course.assignments.create!(title: "some assignment", submission_types: "external_tool")
 
-      expect(SubmissionLifecycleManager).to_not receive(:recompute).with(assignment)
+      expect(SubmissionLifecycleManager).not_to receive(:recompute).with(assignment)
 
       ContentTag.create!(content: not_quizzes_tool, url: not_quizzes_tool.url, context: assignment)
     end

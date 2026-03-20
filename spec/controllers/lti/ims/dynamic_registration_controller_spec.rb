@@ -434,6 +434,17 @@ describe Lti::IMS::DynamicRegistrationController do
                                                                                .and not_change { Lti::Registration.count }
         end
 
+        context "when the RegistrationUpdateRequest has different attrs from the existing registration" do
+          it "does not automatically accept the RegistrationUpdateRequest" do
+            existing_registration
+            subject
+            expect(response).to be_successful
+            update_request = Lti::RegistrationUpdateRequest.last
+            expect(update_request.accepted_at).to be_nil
+            expect(update_request.rejected_at).to be_nil
+          end
+        end
+
         it "creates RegistrationUpdateRequest with correct attributes" do
           subject
           update_request = Lti::RegistrationUpdateRequest.last
@@ -590,7 +601,8 @@ describe Lti::IMS::DynamicRegistrationController do
           "target_link_uri" => "https://updated.example.com/launch",
           "https://canvas.instructure.com/lti/privacy_level" => "email_only",
           "https://canvas.instructure.com/lti/vendor" => "Vendor",
-        }
+        },
+        "contacts" => ["support@example.com"],
       }
     end
 
@@ -633,6 +645,72 @@ describe Lti::IMS::DynamicRegistrationController do
         expect(parsed_body["client_id"]).to eq(developer_key.global_id.to_s)
         expect(parsed_body["application_type"]).to eq("web")
         expect(parsed_body["grant_types"]).to eq(["client_credentials", "implicit"])
+      end
+
+      context "when the update params do not match the existing registration" do
+        it "does not automatically accept the registration update request" do
+          put :update, params: { registration_id: registration.id, **update_params }
+
+          expect(response).to have_http_status(:ok)
+          update_request = Lti::RegistrationUpdateRequest.last
+          expect(update_request.accepted_at).to be_nil
+          expect(update_request.rejected_at).to be_nil
+        end
+
+        context "when other params match but the tool configuration is different" do
+          let(:registration) do
+            lti_ims_registration_model(
+              account:,
+              client_name: update_params["client_name"],
+              redirect_uris: update_params["redirect_uris"],
+              initiate_login_uri: update_params["initiate_login_uri"],
+              jwks_uri: update_params["jwks_uri"],
+              logo_uri: update_params["logo_uri"],
+              lti_tool_configuration: update_params["https://purl.imsglobal.org/spec/lti-tool-configuration"]
+            )
+          end
+
+          it "does not accept the registration update request" do
+            update_params["https://purl.imsglobal.org/spec/lti-tool-configuration"]["custom_parameters"] = { new_global_foo: "bar" }
+
+            put :update, params: { registration_id: registration.id, **update_params }
+
+            expect(response).to have_http_status(:ok)
+            update_request = Lti::RegistrationUpdateRequest.last
+            expect(update_request.accepted_at).to be_nil
+            expect(update_request.rejected_at).to be_nil
+          end
+        end
+      end
+
+      context "when the update params match an existing registration" do
+        let(:registration) do
+          lti_ims_registration_model(
+            account:,
+            client_name: update_params["client_name"],
+            redirect_uris: update_params["redirect_uris"],
+            initiate_login_uri: update_params["initiate_login_uri"],
+            jwks_uri: update_params["jwks_uri"],
+            logo_uri: update_params["logo_uri"],
+            scopes: [TokenScopes::LTI_REGISTRATION_SCOPE],
+            lti_tool_configuration: update_params["https://purl.imsglobal.org/spec/lti-tool-configuration"]
+          )
+        end
+
+        let(:update_params_with_scopes) do
+          update_params.merge({
+                                "scope" => registration.scopes.join(" ")
+                              })
+        end
+
+        it "automatically accepts the registration update request" do
+          put :update, params: { registration_id: registration.id, **update_params_with_scopes }
+
+          expect(response).to have_http_status(:ok)
+          update_request = Lti::RegistrationUpdateRequest.last
+          expect(update_request.accepted_at).not_to be_nil
+          expect(update_request.rejected_at).to be_nil
+        end
       end
 
       context "with invalid registration params" do
@@ -779,6 +857,33 @@ describe Lti::IMS::DynamicRegistrationController do
 
           expect(response).to have_http_status(:unauthorized)
         end
+      end
+    end
+
+    context "when trying to update a different tool's registration" do
+      let(:other_registration) { lti_ims_registration_model(account:) }
+      let(:other_developer_key) do
+        other_registration.developer_key.tap do |dk|
+          dk.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        end
+      end
+
+      before do
+        developer_key.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        request.headers["Authorization"] = "Bearer #{access_token}"
+      end
+
+      it "returns forbidden when trying to update another tool's registration" do
+        put :update, params: { registration_id: other_registration.id, **update_params }
+
+        expect(response).to have_http_status(:forbidden)
+        expect(response.parsed_body["errorMessage"]).to match(/not authorized/i)
+      end
+
+      it "does not create a registration update request" do
+        expect do
+          put :update, params: { registration_id: other_registration.id, **update_params }
+        end.not_to change { Lti::RegistrationUpdateRequest.count }
       end
     end
   end
@@ -1400,6 +1505,27 @@ describe Lti::IMS::DynamicRegistrationController do
       it "returns a 404" do
         get :show_configuration, params: { registration_id: Lti::IMS::Registration.last.id + 1 }
         expect(response).to have_http_status(:not_found)
+      end
+    end
+
+    context "when trying to access a different tool's configuration" do
+      let(:other_registration) { lti_ims_registration_model(account:) }
+      let(:other_developer_key) do
+        other_registration.developer_key.tap do |dk|
+          dk.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        end
+      end
+
+      before do
+        developer_key.update!(scopes: [TokenScopes::LTI_REGISTRATION_SCOPE])
+        request.headers["Authorization"] = "Bearer #{access_token}"
+      end
+
+      it "returns forbidden when accessing another tool's configuration" do
+        get :show_configuration, params: { registration_id: other_registration.id }
+
+        expect(response).to have_http_status(:forbidden)
+        expect(response.parsed_body["errorMessage"]).to match(/not authorized/i)
       end
     end
   end

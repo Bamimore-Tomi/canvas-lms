@@ -243,8 +243,8 @@ class Course < ActiveRecord::Base
   has_many :active_quizzes, -> { preload(:assignment).where("quizzes.workflow_state<>'deleted'").order(:created_at) }, class_name: "Quizzes::Quiz", as: :context, inverse_of: :context
   has_many :assessment_question_banks, -> { preload(:assessment_questions, :assessment_question_bank_users) }, as: :context, inverse_of: :context
   has_many :assessment_questions, through: :assessment_question_banks
-  def inherited_assessment_question_banks(include_self = false)
-    account.inherited_assessment_question_banks(true, *(include_self ? [self] : []))
+  def inherited_assessment_question_banks(include_self: false)
+    account.inherited_assessment_question_banks(*(include_self ? [self] : []), include_self: true)
   end
 
   has_many :external_feeds, as: :context, inverse_of: :context, dependent: :destroy
@@ -424,17 +424,18 @@ class Course < ActiveRecord::Base
                      end
                    },
                    on_create: lambda { |course, version|
-                     if course.saving_user
+                     if course.updating_user
                        begin
                          yaml_data = YAML.safe_load(version.yaml, permitted_classes: [Time, Date, Symbol, ActiveSupport::TimeWithZone, ActiveSupport::TimeZone])
-                         yaml_data["user_id"] = course.saving_user.id
+                         yaml_data["user_id"] = course.updating_user.id
                          version.yaml = yaml_data.to_yaml
                          version.save
                        rescue => e
                          Rails.logger.error("Failed to add user_id to course version: #{e.message}")
                        end
                      end
-                   }
+                   },
+                   versioned_associations: [:attachment_associations]
 
   include StickySisFields
 
@@ -866,7 +867,7 @@ class Course < ActiveRecord::Base
     role_map = {}
     used_roles = Role.where(id: enrollments.distinct.select(:role_id)).to_a
     if used_roles.any?
-      available_roles = account.available_course_roles(true)
+      available_roles = account.available_course_roles(include_inactive: true)
       (used_roles - available_roles).each do |missing_role|
         replacement_role = available_roles.find do |role|
           role.built_in? == missing_role.built_in? &&
@@ -1238,8 +1239,17 @@ class Course < ActiveRecord::Base
       where(CourseAccountAssociation.where("course_account_associations.course_id=courses.id AND course_account_associations.account_id IN (?)", account_ids).arel.exists)
     end
   }
-  scope :published, -> { where(workflow_state: %w[available completed]) }
-  scope :unpublished, -> { where(workflow_state: %w[created claimed]) }
+  PUBLISHED_STATES = %w[available completed].freeze
+  UNPUBLISHED_STATES = %w[created claimed].freeze
+
+  # Maps virtual API state names to real workflow states
+  API_STATE_EXPANSIONS = {
+    "unpublished" => UNPUBLISHED_STATES,
+    "current_and_concluded" => PUBLISHED_STATES,
+  }.freeze
+
+  scope :published, -> { where(workflow_state: PUBLISHED_STATES) }
+  scope :unpublished, -> { where(workflow_state: UNPUBLISHED_STATES) }
 
   scope :deleted, -> { where(workflow_state: "deleted") }
   scope :archived, -> { deleted.where.not(archived_at: nil) }
@@ -1558,17 +1568,16 @@ class Course < ActiveRecord::Base
     shard.activate do
       if workflow_state_changed? || (sis_batch && saved_change_to_workflow_state?)
         if completed?
-          enrollment_info = Enrollment.where(course_id: self, workflow_state: ["active", "invited"]).select(:id, :workflow_state).to_a
-          if enrollment_info.any?
-            data = SisBatchRollBackData.build_dependent_data(sis_batch:, contexts: enrollment_info, updated_state: "completed")
-            Enrollment.where(id: enrollment_info.map(&:id)).update_all(workflow_state: "completed", completed_at: Time.now.utc)
+          current_enrollments = enrollments.where(workflow_state: ["active", "invited"])
+          if current_enrollments.any?
+            data = SisBatchRollBackData.build_dependent_data(sis_batch:, contexts: current_enrollments.select(:id, :workflow_state), updated_state: "completed")
+            current_enrollments.update_all(workflow_state: "completed", completed_at: Time.now.utc)
 
             EnrollmentState.transaction do
-              locked_ids = EnrollmentState.where(enrollment_id: enrollment_info.map(&:id)).lock("FOR NO KEY UPDATE").order(:enrollment_id).pluck(:enrollment_id)
-              EnrollmentState.where(enrollment_id: locked_ids)
-                             .update_all(["state = ?, state_is_current = ?, access_is_current = ?, lock_version = lock_version + 1, updated_at = ?", "completed", true, false, Time.now.utc])
+              enroll_states = EnrollmentState.where(enrollment_id: current_enrollments).lock("FOR NO KEY UPDATE").order(:enrollment_id)
+              enroll_states.update_all(["state = ?, state_is_current = ?, access_is_current = ?, lock_version = lock_version + 1, updated_at = ?", "completed", true, false, Time.now.utc])
             end
-            EnrollmentState.delay_if_production.process_states_for_ids(enrollment_info.map(&:id)) # recalculate access
+            EnrollmentState.delay_if_production.process_states_for_ids(current_enrollments.pluck(:id)) # recalculate access
           end
 
           appointment_participants.active.current.update_all(workflow_state: "deleted")
@@ -1576,14 +1585,12 @@ class Course < ActiveRecord::Base
         elsif deleted?
           user_ids = enrollments.group(:user_id).pluck(:user_id).uniq
           if user_ids.any?
-            enrollment_info = enrollments.select(:id, :workflow_state).to_a
-            if enrollment_info.any?
-              data = SisBatchRollBackData.build_dependent_data(sis_batch:, contexts: enrollment_info, updated_state: "deleted")
-              Enrollment.where(id: enrollment_info.map(&:id)).update_all(workflow_state: "deleted", archived_at:)
+            if enrollments.any?
+              data = SisBatchRollBackData.build_dependent_data(sis_batch:, contexts: enrollments.select(:id, :workflow_state), updated_state: "deleted")
+              enrollments.update_all(workflow_state: "deleted", archived_at:)
               EnrollmentState.transaction do
-                locked_ids = EnrollmentState.where(enrollment_id: enrollment_info.map(&:id)).lock("FOR NO KEY UPDATE").order(:enrollment_id).pluck(:enrollment_id)
-                EnrollmentState.where(enrollment_id: locked_ids)
-                               .update_all(["state = ?, state_is_current = ?, lock_version = lock_version + 1, updated_at = ?", "deleted", true, Time.now.utc])
+                enroll_states = EnrollmentState.where(enrollment_id: enrollments).lock("FOR NO KEY UPDATE").order(:enrollment_id)
+                enroll_states.update_all(["state = ?, state_is_current = ?, lock_version = lock_version + 1, updated_at = ?", "deleted", true, Time.now.utc])
               end
             end
             User.delay_if_production.update_account_associations(user_ids)
@@ -1992,7 +1999,7 @@ class Course < ActiveRecord::Base
   end
 
   def self.require_assignment_groups(contexts)
-    courses = contexts.select { |c| c.is_a?(Course) }
+    courses = contexts.grep(Course)
     groups = Shard.partition_by_shard(courses) do |shard_courses|
       AssignmentGroup.select("id, context_id, context_type").where(context_type: "Course", context_id: shard_courses)
     end.index_by(&:context_id)
@@ -2103,7 +2110,7 @@ class Course < ActiveRecord::Base
 
     RoleOverride.permissions.each do |permission, details|
       given do |user|
-        active_enrollment_allows(user, permission, !details[:restrict_future_enrollments]) ||
+        active_enrollment_allows(user, permission, allow_future: !details[:restrict_future_enrollments]) ||
           account_membership_allows(user, permission)
       end
       can permission
@@ -2281,7 +2288,7 @@ class Course < ActiveRecord::Base
     !large_roster?
   end
 
-  def active_enrollment_allows(user, permission, allow_future = true)
+  def active_enrollment_allows(user, permission, allow_future: true)
     return false unless user && permission && !deleted?
 
     is_unpublished = created? || claimed?
@@ -2932,7 +2939,7 @@ class Course < ActiveRecord::Base
 
   def self_enroll_student(user, opts = {})
     enrollment = enroll_student(user, opts.merge(self_enrolled: true))
-    enrollment.accept(:force)
+    enrollment.accept(force: true)
     unless opts[:skip_pseudonym]
       new_pseudonym = user.find_or_initialize_pseudonym_for_account(root_account)
       new_pseudonym.save if new_pseudonym&.changed?
@@ -3310,13 +3317,13 @@ class Course < ActiveRecord::Base
     end
   end
 
-  def users_visible_to(user, include_priors = false, opts = {})
+  def users_visible_to(user, include_priors: false, include_inactive: false, enrollment_state: nil, exclude_enrollment_state: nil, section_ids: nil)
     visibilities = section_visibilities_for(user)
     visibility = enrollment_visibility_level_for(user, visibilities)
 
     scope = if include_priors
               users
-            elsif opts[:include_inactive] && [:full, :sections].include?(visibility)
+            elsif include_inactive && [:full, :sections].include?(visibility)
               all_current_users
             else
               current_users
@@ -3326,9 +3333,9 @@ class Course < ActiveRecord::Base
                                            user,
                                            visibilities,
                                            visibility,
-                                           enrollment_state: opts[:enrollment_state],
-                                           exclude_enrollment_state: opts[:exclude_enrollment_state],
-                                           section_ids: opts[:section_ids])
+                                           enrollment_state:,
+                                           exclude_enrollment_state:,
+                                           section_ids:)
   end
 
   def enrollments_visible_to(user, opts = {})
@@ -3777,8 +3784,10 @@ class Course < ActiveRecord::Base
       tabs += default_tabs
       tabs += external_tabs
 
-      item_bank_href_override = if root_account.feature_enabled?(:ams_root_account_integration) &&
-                                   feature_enabled?(:ams_course_integration)
+      is_ams = root_account.feature_enabled?(:ams_root_account_integration) &&
+               feature_enabled?(:ams_course_integration)
+
+      item_bank_href_override = if is_ams
                                   :course_item_banks_path
                                 elsif feature_enabled?(:new_quizzes_native_experience)
                                   :course_new_quizzes_banks_path
@@ -3790,7 +3799,8 @@ class Course < ActiveRecord::Base
         NewQuizzesHelper.override_item_banks_tab(
           tabs:,
           href: item_bank_href_override,
-          context: self
+          context: self,
+          css_class: is_ams ? "item_banks" : nil
         )
       end
 
@@ -4108,7 +4118,7 @@ class Course < ActiveRecord::Base
     false
   end
 
-  def restrict_quantitative_data?(user = nil, check_extra_permissions = false)
+  def restrict_quantitative_data?(user = nil, check_extra_permissions: false)
     return false unless user.is_a?(User)
 
     # When check_extra_permissions is true, return false for a teacher,ta, admin, or designer

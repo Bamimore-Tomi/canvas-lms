@@ -18,7 +18,6 @@
 
 import {fireEvent, render, screen, waitFor} from '@testing-library/react'
 import {vi} from 'vitest'
-
 import {ManualCaptionCreator} from '../ManualCaptionCreator'
 
 const LIVE_REGION_ID = 'flash_screenreader_holder'
@@ -203,20 +202,108 @@ describe('<ManualCaptionCreator />', () => {
       })
     })
 
-    it('a11y: button aria-label shows "Choose File" when empty, "Selected File: filename" when file selected', async () => {
+    it('a11y: button has aria-describedby linking to format hint and file status', async () => {
       renderComponent()
 
-      // Initially button should have "Choose caption file" label
-      const chooseFileButton = screen.getByLabelText(/choose file/i)
-      expect(chooseFileButton).toBeInTheDocument()
+      const chooseFileButton = screen.getByText(/choose file/i).closest('button')
+      expect(chooseFileButton).toHaveAttribute('aria-describedby', 'cc-file-hint cc-file-status')
+
+      // Hint element should exist with correct id
+      expect(document.getElementById('cc-file-hint')).toHaveTextContent(/SRT or WebVTT/i)
+
+      // Status element should show "No file chosen" initially
+      expect(document.getElementById('cc-file-status')).toHaveTextContent(/no file chosen/i)
 
       // Select a file
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
       const validFile = createValidFile('my-captions.vtt')
       fireEvent.change(fileInput, {target: {files: [validFile]}})
 
-      // Button aria-label should now indicate the selected file
-      expect(await screen.findByLabelText(/Selected file: my-captions.vtt/i)).toBeInTheDocument()
+      // Status element should now show the selected file name
+      expect(await screen.findByText('my-captions.vtt')).toBeInTheDocument()
+      expect(document.getElementById('cc-file-status')).toHaveTextContent('my-captions.vtt')
+    })
+  })
+
+  describe('Pendo tracking', () => {
+    const mockTrack = vi.fn()
+
+    beforeEach(() => {
+      ;(window as any).canvasUsageMetrics = {track: mockTrack}
+    })
+
+    afterEach(() => {
+      delete (window as any).canvasUsageMetrics
+    })
+
+    it('fires canvas_caption_validation_error missing_language when no language is selected', async () => {
+      renderComponent()
+      fireEvent.click(screen.getByText('Upload'))
+      await waitFor(() => {
+        expect(mockTrack).toHaveBeenCalledWith('canvas_caption_validation_error', {
+          type: 'track',
+          flow_type: 'upload_file',
+          error_type: 'missing_language',
+        })
+      })
+    })
+
+    it('fires canvas_caption_validation_error missing_file when no file is selected', async () => {
+      renderComponent()
+      fireEvent.click(screen.getByText('Select Language'))
+      fireEvent.click(screen.getByText('English'))
+      fireEvent.click(screen.getByText('Upload'))
+      await waitFor(() => {
+        expect(mockTrack).toHaveBeenCalledWith('canvas_caption_validation_error', {
+          type: 'track',
+          flow_type: 'upload_file',
+          error_type: 'missing_file',
+        })
+      })
+    })
+
+    it('fires canvas_caption_validation_error file_too_large when large file selected', async () => {
+      renderComponent()
+      const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+      fireEvent.change(fileInput, {target: {files: [createLargeFile()]}})
+      await waitFor(() => {
+        expect(mockTrack).toHaveBeenCalledWith('canvas_caption_validation_error', {
+          type: 'track',
+          flow_type: 'upload_file',
+          error_type: 'file_too_large',
+        })
+      })
+    })
+  })
+
+  describe('.onDirtyStateChanged', () => {
+    describe('called with true', () => {
+      it('when language is selected', async () => {
+        const onDirtyStateChanged = vi.fn()
+        renderComponent({onDirtyStateChanged})
+
+        // Select a language - click on placeholder text to open, then click option
+        const selectPlaceholder = screen.getByText('Select Language')
+        fireEvent.click(selectPlaceholder)
+        fireEvent.click(screen.getByText('English'))
+
+        await waitFor(() => {
+          expect(onDirtyStateChanged).toHaveBeenCalledWith(true)
+        })
+      })
+
+      it('when file is selected', async () => {
+        const onDirtyStateChanged = vi.fn()
+        renderComponent({onDirtyStateChanged})
+
+        const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+        const validFile = createValidFile('my-captions.vtt')
+        fireEvent.change(fileInput, {target: {files: [validFile]}})
+
+        await waitFor(() => {
+          expect(onDirtyStateChanged).toHaveBeenCalledWith(true)
+        })
+      })
     })
   })
 })

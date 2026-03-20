@@ -15,53 +15,60 @@
  * You should have received a copy of the GNU Affero General Public License along
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-import React, {useState, useEffect, useCallback} from 'react'
-import {arrayOf, bool, func, number, shape, string} from 'prop-types'
-import {Button, CloseButton, IconButton} from '@instructure/ui-buttons'
+
+import {
+  ClosedCaptionPanel,
+  ClosedCaptionPanelV2,
+  CONSTANTS,
+  trackPendoEvent,
+} from '@instructure/canvas-media'
+import {Button, CloseButton} from '@instructure/ui-buttons'
+import {Checkbox, CheckboxGroup} from '@instructure/ui-checkbox'
+import {Flex} from '@instructure/ui-flex'
+import {FormFieldGroup} from '@instructure/ui-form-field'
 import {Heading} from '@instructure/ui-heading'
 import {RadioInput, RadioInputGroup} from '@instructure/ui-radio-input'
 import {SimpleSelect} from '@instructure/ui-simple-select'
-import {TextArea} from '@instructure/ui-text-area'
-import {Text} from '@instructure/ui-text'
-import {IconQuestionLine} from '@instructure/ui-icons'
-import {Flex} from '@instructure/ui-flex'
-import {FormFieldGroup} from '@instructure/ui-form-field'
-import {View} from '@instructure/ui-view'
 import {Spinner} from '@instructure/ui-spinner'
+import {Text} from '@instructure/ui-text'
+import {TextInput} from '@instructure/ui-text-input'
 import {Tooltip} from '@instructure/ui-tooltip'
 import {Tray} from '@instructure/ui-tray'
-import {StoreProvider} from '../../shared/StoreContext'
-import {ClosedCaptionPanel, ClosedCaptionPanelV2, CONSTANTS} from '@instructure/canvas-media'
+import {View} from '@instructure/ui-view'
+import {arrayOf, bool, func, number, shape, string} from 'prop-types'
+import React, {useCallback, useEffect, useRef, useState} from 'react'
+import Bridge from '../../../../bridge'
+import formatMessage from '../../../../format-message'
+import RCEGlobals from '../../../../rce/RCEGlobals'
+import RceApiSource, {originFromHost} from '../../../../rcs/api'
+import {instuiPopupMountNodeFn} from '../../../../util/fullscreenHelpers'
 import {
   CUSTOM,
-  MIN_WIDTH_VIDEO,
-  MIN_PERCENTAGE,
-  videoSizes,
-  studioPlayerSizes,
   labelForImageSize,
-  scaleVideoSize,
-  scaleToSize,
-  MIN_WIDTH_STUDIO_PLAYER,
   MIN_HEIGHT_STUDIO_PLAYER,
+  MIN_PERCENTAGE,
+  MIN_WIDTH_STUDIO_PLAYER,
+  MIN_WIDTH_VIDEO,
+  scaleToSize,
+  scaleVideoSize,
+  studioPlayerSizes,
+  videoSizes,
 } from '../../instructure_image/ImageEmbedOptions'
-import Bridge from '../../../../bridge'
-import RceApiSource, {originFromHost} from '../../../../rcs/api'
-import formatMessage from '../../../../format-message'
 import DimensionsInput, {useDimensionsState} from '../../shared/DimensionsInput'
-import {getTrayHeight} from '../../shared/trayUtils'
-import {instuiPopupMountNodeFn} from '../../../../util/fullscreenHelpers'
+import {StoreProvider} from '../../shared/StoreContext'
 import {parsedStudioOptionsPropType} from '../../shared/StudioLtiSupportUtils'
-import RCEGlobals from '../../../../rce/RCEGlobals'
-import {Checkbox, CheckboxGroup} from '@instructure/ui-checkbox'
-const getLiveRegion = () => document.getElementById('flash_screenreader_holder')
+import {getTrayHeight} from '../../shared/trayUtils'
+import {
+  getPlayerLayoutSizes,
+  labelForPlayerLayoutSize,
+  playerLayoutDimensions,
+  SMALL,
+  scalePlayerLayoutForHeight,
+  scalePlayerLayoutForWidth,
+} from '../playerLayoutOptions'
+import {mapStudioEmbedOptions, mapViewerRestrictions, readViewerRestrictions} from '../utils'
 
-function mapStudioEmbedOptions(embedOptions) {
-  return embedOptions
-    ? Object.entries(embedOptions)
-        .filter(([, v]) => v)
-        .map(([k]) => k)
-    : []
-}
+const getLiveRegion = () => document.getElementById('flash_screenreader_holder')
 
 export default function VideoOptionsTray({
   videoOptions,
@@ -87,30 +94,63 @@ export default function VideoOptionsTray({
   const currentWidth = videoOptions.appliedWidth || naturalWidth
   const [titleText, setTitleText] = useState(videoOptions.titleText)
   const [displayAs, setDisplayAs] = useState('embed')
-  const [videoSize, setVideoSize] = useState(videoOptions.videoSize)
+  const [videoSize, setVideoSize] = useState(() => {
+    if (isAsrCaptioningImprovements) {
+      const match = Object.entries(playerLayoutDimensions).find(
+        ([, dims]) => dims.width === videoOptions.appliedWidth,
+      )
+      if (match) return match[0]
+    }
+    return videoOptions.videoSize
+  })
   const [videoHeight, setVideoHeight] = useState(currentHeight)
   const [videoWidth, setVideoWidth] = useState(currentWidth)
   const [subtitles, setSubtitles] = useState(videoOptions.tracks || [])
-  const [minWidth] = useState(isConsolidatedMediaPlayer ? MIN_WIDTH_STUDIO_PLAYER : MIN_WIDTH_VIDEO)
-  const [minHeight] = useState(
-    isConsolidatedMediaPlayer
+  const [minWidth] = useState(() => {
+    if (isAsrCaptioningImprovements) {
+      return playerLayoutDimensions[SMALL].width
+    }
+    return isConsolidatedMediaPlayer ? MIN_WIDTH_STUDIO_PLAYER : MIN_WIDTH_VIDEO
+  })
+  const [minHeight] = useState(() => {
+    if (isAsrCaptioningImprovements) {
+      return playerLayoutDimensions[SMALL].height
+    }
+    return isConsolidatedMediaPlayer
       ? MIN_HEIGHT_STUDIO_PLAYER
-      : Math.round((videoHeight / videoWidth) * MIN_WIDTH_VIDEO),
-  )
+      : Math.round((videoHeight / videoWidth) * MIN_WIDTH_VIDEO)
+  })
   const [minPercentage] = useState(MIN_PERCENTAGE)
   const [editLocked, setEditLocked] = useState(null)
   const [loading, setLoading] = useState(true)
 
+  const [viewerRestrictions, setViewerRestrictions] = useState(() =>
+    readViewerRestrictions(videoOptions.viewerRestrictions),
+  )
   const [studioEmbedOptions, setStudioEmbedOptions] = useState(() =>
     mapStudioEmbedOptions(studioOptions?.embedOptions),
   )
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const fetchedFromIframeRef = useRef(false)
+
+  const titleInputRef = useRef(null)
 
   const isStudio = !!studioOptions
   const showDisplayOptions = (!isStudio || studioOptions.convertibleToLink) && !forBlockEditorUse
   const showSizeControls = (!isStudio || studioOptions.resizable) && !forBlockEditorUse
-  const dimensionsState = useDimensionsState(videoOptions, {minHeight, minWidth, minPercentage})
+  const dimensionsState = useDimensionsState(
+    videoOptions,
+    {minHeight, minWidth, minPercentage},
+    isAsrCaptioningImprovements
+      ? {scaleFns: {width: scalePlayerLayoutForWidth, height: scalePlayerLayoutForHeight}}
+      : {},
+  )
   const api = new RceApiSource(trayProps)
-  const videoSizeOptions = isConsolidatedMediaPlayer ? studioPlayerSizes : videoSizes
+  const videoSizeOptions = isConsolidatedMediaPlayer
+    ? isAsrCaptioningImprovements
+      ? getPlayerLayoutSizes()
+      : studioPlayerSizes
+    : videoSizes
 
   useEffect(() => {
     if (videoOptions.attachmentId) {
@@ -129,10 +169,21 @@ export default function VideoOptionsTray({
   }, [videoOptions.attachmentId])
 
   useEffect(() => {
-    if (!isLoading && subtitles.length === 0) {
+    if (!isLoading && subtitles.length === 0 && !fetchedFromIframeRef.current) {
+      // only request subtitle data after mount
+      fetchedFromIframeRef.current = true
       requestSubtitlesFromIframe(setSubtitles)
     }
   }, [isLoading, subtitles.length, requestSubtitlesFromIframe])
+
+  useEffect(() => {
+    if (open && isAsrCaptioningImprovements) {
+      trackPendoEvent('canvas_media_options_opened', {
+        entry_point: 'quick_menu',
+        media_kind: 'video',
+      })
+    }
+  }, [open, isAsrCaptioningImprovements])
 
   function handleTitleTextChange(event) {
     setTitleText(event.target.value)
@@ -148,6 +199,10 @@ export default function VideoOptionsTray({
     if (selectedOption.value === CUSTOM) {
       setVideoHeight(currentHeight)
       setVideoWidth(currentWidth)
+    } else if (isAsrCaptioningImprovements) {
+      const {width, height} = playerLayoutDimensions[selectedOption.value]
+      setVideoHeight(height)
+      setVideoWidth(width)
     } else {
       const {height, width} = isConsolidatedMediaPlayer
         ? scaleVideoSize(selectedOption.value, naturalWidth, naturalHeight)
@@ -176,11 +231,22 @@ export default function VideoOptionsTray({
 
   function handleSave(event, updateMediaObject) {
     event.preventDefault()
+    if (titleText.trim() === '') {
+      if (titleInputRef.current) {
+        titleInputRef.current.focus()
+      }
+      return
+    }
     let appliedHeight = videoHeight
     let appliedWidth = videoWidth
     if (videoSize === CUSTOM) {
       appliedHeight = dimensionsState.height
       appliedWidth = dimensionsState.width
+    }
+    if (isAsrCaptioningImprovements) {
+      trackPendoEvent('canvas_player_layout_selected', {
+        layout_type: videoSize.replace('-', '_'),
+      })
     }
     onSave({
       media_object_id: videoOptions.id,
@@ -192,44 +258,22 @@ export default function VideoOptionsTray({
       subtitles,
       updateMediaObject,
       editLocked,
+      viewerRestrictions: mapViewerRestrictions(viewerRestrictions),
     })
   }
 
-  const tooltipText = formatMessage('Used by screen readers to describe the video')
-  const textAreaLabel = (
-    <Flex alignItems="center">
-      <Flex.Item>{formatMessage('Title')}</Flex.Item>
-      <Flex.Item margin="0 0 0 xx-small">
-        <Tooltip
-          on={['hover', 'focus']}
-          placement="top"
-          renderTip={
-            <View display="block" id="alt-text-label-tooltip" maxWidth="14rem">
-              {tooltipText}
-            </View>
-          }
-        >
-          <IconButton
-            renderIcon={IconQuestionLine}
-            size="small"
-            screenReaderLabel={tooltipText}
-            withBackground={false}
-            withBorder={false}
-          />
-        </Tooltip>
-      </Flex.Item>
-    </Flex>
-  )
+  const handleDirtyCheck = isDirty => {
+    setHasUnsavedChanges(isDirty)
+  }
+
   const messagesForSize = []
-  if (videoSize !== CUSTOM) {
+  if (videoSize !== CUSTOM && !isAsrCaptioningImprovements) {
     messagesForSize.push({
       text: formatMessage('{width} x {height}px', {height: videoHeight, width: videoWidth}),
       type: 'hint',
     })
   }
-  const saveDisabled =
-    displayAs === 'embed' &&
-    (titleText === '' || (videoSize === CUSTOM && !dimensionsState.isValid))
+  const saveDisabled = displayAs === 'embed' && videoSize === CUSTOM && !dimensionsState.isValid
 
   return (
     <StoreProvider {...trayProps}>
@@ -291,15 +335,24 @@ export default function VideoOptionsTray({
                               <Flex.Item padding="small none none small">{titleText}</Flex.Item>
                             </Flex>
                           ) : (
-                            <TextArea
-                              aria-describedby="alt-text-label-tooltip"
-                              disabled={displayAs === 'link'}
-                              height="4rem"
-                              label={textAreaLabel}
+                            <TextInput
+                              interaction={displayAs === 'link' ? 'disabled' : 'enabled'}
+                              renderLabel={formatMessage('Title')}
                               onChange={handleTitleTextChange}
-                              placeholder={formatMessage('(Describe the video)')}
-                              resize="vertical"
+                              placeholder={formatMessage('Enter a media title')}
                               value={titleText}
+                              inputRef={el => (titleInputRef.current = el)}
+                              messages={
+                                titleText?.trim() === ''
+                                  ? [
+                                      {
+                                        text: formatMessage("Title can't be blank"),
+                                        type: 'newError',
+                                      },
+                                    ]
+                                  : []
+                              }
+                              isRequired
                             />
                           )}
                         </Flex.Item>
@@ -327,7 +380,11 @@ export default function VideoOptionsTray({
                               id={`${id}-size`}
                               mountNode={instuiPopupMountNodeFn}
                               disabled={displayAs !== 'embed'}
-                              renderLabel={formatMessage('Size')}
+                              renderLabel={
+                                isAsrCaptioningImprovements
+                                  ? formatMessage('Player layout')
+                                  : formatMessage('Size')
+                              }
                               messages={messagesForSize}
                               assistiveText={formatMessage('Use arrow keys to navigate options.')}
                               onChange={handleVideoSizeChange}
@@ -339,10 +396,21 @@ export default function VideoOptionsTray({
                                   key={size}
                                   value={size}
                                 >
-                                  {labelForImageSize(size)}
+                                  {isAsrCaptioningImprovements
+                                    ? labelForPlayerLayoutSize(size)
+                                    : labelForImageSize(size)}
                                 </SimpleSelect.Option>
                               ))}
                             </SimpleSelect>
+                            {isAsrCaptioningImprovements && !isStudio && (
+                              <View as="div" margin="xx-small none none none">
+                                <Text size="small">
+                                  {formatMessage(
+                                    'Transcript panel is available at widths above 720px.',
+                                  )}
+                                </Text>
+                              </View>
+                            )}
                           </View>
                           {videoSize === CUSTOM && (
                             <View as="div" padding="xx-small small">
@@ -356,6 +424,22 @@ export default function VideoOptionsTray({
                               />
                             </View>
                           )}
+                        </Flex.Item>
+                      )}
+                      {isAsrCaptioningImprovements && !isStudio && (
+                        <Flex.Item padding="small">
+                          <CheckboxGroup
+                            name="viewer-restrictions"
+                            onChange={setViewerRestrictions}
+                            defaultValue={viewerRestrictions}
+                            description={formatMessage('Viewer Restrictions')}
+                          >
+                            <Checkbox
+                              variant="toggle"
+                              label={formatMessage('Show Rolling Transcript')}
+                              value="show_rolling_transcript"
+                            />
+                          </CheckboxGroup>
                         </Flex.Item>
                       )}
                       {!isStudio && !editLocked && (
@@ -385,9 +469,9 @@ export default function VideoOptionsTray({
                             {isAsrCaptioningImprovements && (
                               <ClosedCaptionPanelV2
                                 subtitles={subtitles.map(st => ({
-                                  locale: st.locale,
-                                  inherited: st.inherited,
+                                  ...st,
                                   file: {name: st.language || st.locale},
+                                  asr: Boolean(st.asr),
                                 }))}
                                 uploadMediaTranslations={Bridge.uploadMediaTranslations}
                                 userLocale={Bridge.userLocale}
@@ -415,6 +499,7 @@ export default function VideoOptionsTray({
                                   setSubtitles(prev => prev.filter(s => s.locale !== locale))
                                   onCaptionsModified?.()
                                 }}
+                                onDirtyStateChanged={handleDirtyCheck}
                               />
                             )}
                           </FormFieldGroup>
@@ -426,7 +511,7 @@ export default function VideoOptionsTray({
                             name="studio-embed-options"
                             onChange={handleEmbedOptionChange}
                             value={studioEmbedOptions}
-                            description={formatMessage('Embed Options')}
+                            description={formatMessage('Viewer Restrictions')}
                           >
                             <Text variant="contentSmall">
                               {formatMessage('Changes will apply after you save this page.')}
@@ -448,6 +533,11 @@ export default function VideoOptionsTray({
                               value="enableTranscriptDownload"
                               variant="toggle"
                             />
+                            <Checkbox
+                              label={formatMessage('Show rolling transcript')}
+                              value="showRollingTranscript"
+                              variant="toggle"
+                            />
                           </CheckboxGroup>
                         </Flex.Item>
                       ) : null}
@@ -459,13 +549,21 @@ export default function VideoOptionsTray({
                     padding="small medium"
                     textAlign="end"
                   >
-                    <Button
-                      disabled={saveDisabled}
-                      onClick={event => handleSave(event, contentProps.updateMediaObject)}
-                      color="primary"
+                    <Tooltip
+                      renderTip={formatMessage('Unsaved changes will be lost.')}
+                      placement="top"
+                      on={['hover', 'focus']}
+                      preventTooltip={!hasUnsavedChanges}
+                      mountNode={instuiPopupMountNodeFn}
                     >
-                      {formatMessage('Done')}
-                    </Button>
+                      <Button
+                        interaction={saveDisabled ? 'disabled' : 'enabled'}
+                        onClick={event => handleSave(event, contentProps.updateMediaObject)}
+                        color="primary"
+                      >
+                        {formatMessage('Done')}
+                      </Button>
+                    </Tooltip>
                   </Flex.Item>
                 </Flex>
               </Flex.Item>
@@ -490,6 +588,9 @@ VideoOptionsTray.propTypes = {
         inherited: bool,
       }),
     ),
+    viewerRestrictions: shape({
+      show_rolling_transcript: bool,
+    }),
   }).isRequired,
   onEntered: func,
   onExited: func,

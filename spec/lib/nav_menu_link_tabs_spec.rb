@@ -41,7 +41,7 @@ describe NavMenuLinkTabs do
         { "id" => "nav_menu_link_#{@link_deleted.id}" },
       ]
 
-      NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:)
+      NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:, can_manage_links: true)
     end
 
     it "preserves existing links and passes through non-link" do
@@ -83,7 +83,7 @@ describe NavMenuLinkTabs do
           { "id" => "nav_menu_link_#{@account_link.id}" }
         ]
 
-        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:)
+        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:, can_manage_links: true)
 
         expect(result.length).to eq(2)
         expect(result[1]).to eq({ "id" => "nav_menu_link_#{@account_link.id}" })
@@ -105,7 +105,7 @@ describe NavMenuLinkTabs do
           { "id" => "people" }
         ]
 
-        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:)
+        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:, can_manage_links: true)
 
         expect(result.length).to eq(4)
         expect(result[0]["id"]).to eq("assignments")
@@ -124,11 +124,73 @@ describe NavMenuLinkTabs do
           { "id" => "nav_menu_link_#{NavMenuLink.last.id + 1}" } # Non-existent link
         ]
 
-        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:)
+        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:, can_manage_links: true)
 
         # Should filter out the other account's link
         expect(result.length).to eq(1)
         expect(result[0]["id"]).to eq("assignments")
+      end
+    end
+
+    context "with can_manage_links: false" do
+      it "skips creating new links" do
+        @link1 = NavMenuLink.create!(context: @course, course_nav: true, label: "Existing Link", url: "https://existing.com")
+
+        tabs = [
+          { "id" => "assignments" },
+          { "id" => "nav_menu_link_#{@link1.id}" },
+          { "href" => "nav_menu_link_url", "args" => ["https://new.com"], "label" => "New Link" },
+        ]
+
+        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:, can_manage_links: false)
+
+        # Should preserve existing link
+        expect(result[1]).to eq({ "id" => "nav_menu_link_#{@link1.id}" })
+
+        # Should not create new link
+        expect(result.length).to eq(2) # assignments + existing link (new link skipped)
+
+        links = NavMenuLink.active.where(context: @course).to_a
+        expect(links.length).to eq(1)
+        expect(links[0].id).to eq(@link1.id)
+      end
+
+      it "skips deleting existing links" do
+        @link1 = NavMenuLink.create!(context: @course, course_nav: true, label: "Keep Link", url: "https://keep.com")
+        @link2 = NavMenuLink.create!(context: @course, course_nav: true, label: "Also Keep", url: "https://alsokeep.com")
+
+        tabs = [
+          { "id" => "assignments" },
+          { "id" => "nav_menu_link_#{@link1.id}" },
+          # link2 is not in tabs, but should not be deleted when can_manage_links: false
+        ]
+
+        NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:, can_manage_links: false)
+
+        # Both links should still exist
+        links = NavMenuLink.active.where(context: @course).to_a
+        expect(links.map(&:id)).to contain_exactly(@link1.id, @link2.id)
+      end
+
+      it "still allows rearranging existing links" do
+        @link1 = NavMenuLink.create!(context: @course, course_nav: true, label: "Link 1", url: "https://link1.com")
+        @link2 = NavMenuLink.create!(context: @course, course_nav: true, label: "Link 2", url: "https://link2.com")
+
+        tabs = [
+          { "id" => "assignments" },
+          { "id" => "nav_menu_link_#{@link2.id}" }, # link2 first
+          { "id" => "nav_menu_link_#{@link1.id}" }, # link1 second
+          { "id" => "people" }
+        ]
+
+        result = NavMenuLinkTabs.sync_course_links_with_tabs(course: @course, tabs:, can_manage_links: false)
+
+        expect(result[1]["id"]).to eq("nav_menu_link_#{@link2.id}")
+        expect(result[2]["id"]).to eq("nav_menu_link_#{@link1.id}")
+
+        # Both links should still exist
+        links = NavMenuLink.active.where(context: @course).to_a
+        expect(links.length).to eq(2)
       end
     end
   end
@@ -199,6 +261,51 @@ describe NavMenuLinkTabs do
 
       expect(tabs.pluck(:label)).to eq %w[parent1 parent2 child1 child2]
       expect(tabs.pluck(:link_context_type).uniq).to eq ["account"]
+    end
+  end
+
+  describe ".account_tabs" do
+    it "returns tabs for account navigation links" do
+      link1 = NavMenuLink.create!(context: @account, account_nav: true, label: "Account Link 1", url: "https://account1.com")
+      link2 = NavMenuLink.create!(context: @account, account_nav: true, label: "Account Link 2", url: "https://account2.com")
+
+      # Should not be included
+      NavMenuLink.create!(context: @account, course_nav: true, label: "Course Link", url: "https://course.com")
+      NavMenuLink.create!(context: @account, user_nav: true, label: "User Link", url: "https://user.com")
+
+      tabs = NavMenuLinkTabs.account_tabs(@account)
+
+      expect(tabs.length).to eq(2)
+      expect(tabs[0]).to include(
+        id: "nav_menu_link_#{link1.id}",
+        label: "Account Link 1",
+        href: :nav_menu_link_url,
+        external: true,
+        target: "_blank",
+        link_context_type: "account"
+      )
+      expect(tabs[1]).to include(id: "nav_menu_link_#{link2.id}", label: "Account Link 2")
+    end
+
+    it "returns account nav links from the account chain" do
+      parent_account = Account.create!(name: "Parent Account")
+      child_account = Account.create!(name: "Child Account", parent_account:)
+
+      NavMenuLink.create!(context: parent_account, account_nav: true, label: "Parent Link", url: "https://parent.com")
+      NavMenuLink.create!(context: child_account, account_nav: true, label: "Child Link", url: "https://child.com")
+
+      tabs = NavMenuLinkTabs.account_tabs(child_account)
+
+      expect(tabs.pluck(:label)).to include("Parent Link", "Child Link")
+    end
+
+    it "does not include account nav links from unrelated accounts" do
+      other_account = Account.create!(name: "Unrelated Account")
+      NavMenuLink.create!(context: other_account, account_nav: true, label: "Other Link", url: "https://other.com")
+
+      tabs = NavMenuLinkTabs.account_tabs(@account)
+
+      expect(tabs.pluck(:label)).not_to include("Other Link")
     end
   end
 

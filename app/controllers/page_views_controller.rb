@@ -270,8 +270,6 @@
 #
 
 class PageViewsController < ApplicationController
-  before_action :require_user, only: [:index]
-
   include Api::V1::PageView
 
   # Maximum records per page for page views API (PV5 supports up to 200)
@@ -336,10 +334,10 @@ class PageViewsController < ApplicationController
     # Date range is irrelevant - Query reads sequentially until LIMIT is reached, then stops
     # RCU formula: DynamoDB uses eventually consistent reads (50% cost of strongly consistent)
     # Eventually consistent: 1 RCU per 8192 bytes, avg line = 592 bytes, lines per RCU ≈ 13.838
-    # Rate limit cost = actual RCU * 2 multiplier (permissive: higher throughput for clients)
+    # Rate limit cost = actual RCU * 5 multiplier (standard: balanced throughput protection)
     per_page = (params[:per_page] || 10).to_i.clamp(1, PAGE_VIEWS_MAX_PER_PAGE)
     actual_rcu = (per_page * 0.0723).ceil
-    final_cost = actual_rcu * 2
+    final_cost = actual_rcu * 5
 
     increment_request_cost(final_cost)
 
@@ -461,11 +459,19 @@ class PageViewsController < ApplicationController
   rescue PageViews::Common::TooManyRequestsError => e
     Canvas::Errors.capture_exception(:pv5, e, :warn)
     render json: { error: t("Page Views rate limit exceeded. Please wait and try again.") }, status: :too_many_requests
+  rescue PageViews::Common::ServiceUnavailable => e
+    Canvas::Errors.capture_exception(:pv5, e, :warn)
+    render json: { error: t("Query queue is at capacity. Please wait and try again.") }, status: :service_unavailable
   end
 
   # @API BETA - Poll query status
   # Checks the status of a previously initiated page views query. Returns the current
   # processing status and provides a result URL when the query is complete.
+  #
+  # The query may fail with status "failed" and error_code
+  # "RESULT_SIZE_LIMIT_EXCEEDED" if the result exceeds 500 MB.
+  # If this happens, narrow the date range or query smaller
+  # time intervals.
   #
   # As this is a beta endpoint, it is subject to change or removal at any time without the standard notice periods outlined in the API policy.
   #
@@ -704,6 +710,9 @@ class PageViewsController < ApplicationController
   rescue PageViews::Common::TooManyRequestsError => e
     Canvas::Errors.capture_exception(:pv5, e, :warn)
     render json: { error: t("Page Views rate limit exceeded. Please wait and try again.") }, status: :too_many_requests
+  rescue PageViews::Common::ServiceUnavailable => e
+    Canvas::Errors.capture_exception(:pv5, e, :warn)
+    render json: { error: t("Query queue is at capacity. Please wait and try again.") }, status: :service_unavailable
   rescue PageViews::Common::InvalidRequestError, ArgumentError => e
     Canvas::Errors.capture_exception(:pv5, e, :warn)
     render json: { error: e.message }, status: :bad_request
@@ -847,28 +856,33 @@ class PageViewsController < ApplicationController
 
   private
 
+  def pv5_config
+    current_region = Shard.current&.database_server&.config&.dig(:region) || ApplicationController.region
+    PageViews::Configuration.new(region: current_region)
+  end
+
   def pv5_enqueue_service
-    PageViews::EnqueueQueryService.new(PageViews::Configuration.new, requestor_user: @current_user)
+    PageViews::EnqueueQueryService.new(pv5_config, requestor_user: @current_user)
   end
 
   def pv5_poll_service
-    PageViews::PollQueryService.new(PageViews::Configuration.new)
+    PageViews::PollQueryService.new(pv5_config, requestor_user: @current_user)
   end
 
   def pv5_fetch_result_service
-    PageViews::FetchResultService.new(PageViews::Configuration.new)
+    PageViews::FetchResultService.new(pv5_config, requestor_user: @current_user)
   end
 
   def pv5_enqueue_batch_service
-    PageViews::EnqueueBatchQueryService.new(PageViews::Configuration.new, requestor_user: @current_user)
+    PageViews::EnqueueBatchQueryService.new(pv5_config, requestor_user: @current_user)
   end
 
   def pv5_poll_batch_service
-    PageViews::PollBatchQueryService.new(PageViews::Configuration.new)
+    PageViews::PollBatchQueryService.new(pv5_config, requestor_user: @current_user)
   end
 
   def pv5_fetch_batch_result_service
-    PageViews::FetchBatchResultService.new(PageViews::Configuration.new)
+    PageViews::FetchBatchResultService.new(pv5_config, requestor_user: @current_user)
   end
 
   def validate_query_id!

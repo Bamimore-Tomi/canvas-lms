@@ -31,6 +31,46 @@ describe NewQuizzesHelper do
     allow(Services::NewQuizzes).to receive(:launch_url).and_return("https://newquizzes.example.com/remoteEntry.js")
   end
 
+  describe "#setup_new_quizzes_env" do
+    let(:signed_launch_data) do
+      {
+        launch_url: "http://example.com/launch",
+        signature: "abc123",
+        basename: "/courses/1/assignments/2"
+      }
+    end
+
+    let(:launch_url) { "https://newquizzes.example.com/remoteEntry.js" }
+
+    before do
+      course.enable_feature!(:new_quizzes_native_experience)
+    end
+
+    it "calls add_new_quizzes_bundle" do
+      expect(self).to receive(:add_new_quizzes_bundle).with(launch_url:)
+      expect(self).to receive(:js_env).with(hash_including(NEW_QUIZZES: signed_launch_data))
+      expect(self).to receive(:add_body_class).with("native-new-quizzes full-width")
+
+      setup_new_quizzes_env(signed_launch_data, launch_url:)
+    end
+
+    it "sets NEW_QUIZZES in js_env with signed launch data" do
+      allow(self).to receive(:add_new_quizzes_bundle)
+      allow(self).to receive(:add_body_class)
+      expect(self).to receive(:js_env).with(hash_including(NEW_QUIZZES: signed_launch_data))
+
+      setup_new_quizzes_env(signed_launch_data, launch_url:)
+    end
+
+    it "adds native-new-quizzes and full-width body classes" do
+      allow(self).to receive(:add_new_quizzes_bundle)
+      allow(self).to receive(:js_env)
+      expect(self).to receive(:add_body_class).with("native-new-quizzes full-width")
+
+      setup_new_quizzes_env(signed_launch_data, launch_url:)
+    end
+  end
+
   describe "#add_new_quizzes_bundle" do
     context "when context does not respond to feature_enabled?" do
       before do
@@ -42,7 +82,7 @@ describe NewQuizzesHelper do
         expect(self).not_to receive(:css_bundle)
         expect(self).not_to receive(:remote_env)
 
-        add_new_quizzes_bundle
+        add_new_quizzes_bundle(launch_url: "https://newquizzes.example.com/remoteEntry.js")
       end
     end
 
@@ -56,7 +96,7 @@ describe NewQuizzesHelper do
         expect(self).not_to receive(:css_bundle)
         expect(self).not_to receive(:remote_env)
 
-        add_new_quizzes_bundle
+        add_new_quizzes_bundle(launch_url: "https://newquizzes.example.com/remoteEntry.js")
       end
     end
 
@@ -74,7 +114,7 @@ describe NewQuizzesHelper do
           }
         )
 
-        add_new_quizzes_bundle
+        add_new_quizzes_bundle(launch_url: "https://newquizzes.example.com/remoteEntry.js")
       end
     end
   end
@@ -83,7 +123,7 @@ describe NewQuizzesHelper do
     let(:tabs) do
       [
         { id: "home", label: "Home", css_class: "home", href: :course_path },
-        { id: "item_banks", label: "Item Banks", css_class: "item_banks", href: :some_original_path },
+        { id: "item_banks", label: "Item Banks", css_class: "context_external_tool_7", href: :some_original_path, args: [1, 7], external: true },
         { id: "assignments", label: "Assignments", css_class: "assignments", href: :course_assignments_path }
       ]
     end
@@ -100,6 +140,50 @@ describe NewQuizzesHelper do
         expect(item_banks_tab).to be_present
         expect(item_banks_tab[:href]).to eq(:course_new_quizzes_banks_path)
         expect(item_banks_tab[:label]).to eq("Item Banks")
+      end
+
+      it "sets external to false" do
+        NewQuizzesHelper.override_item_banks_tab(
+          tabs:,
+          href: :course_new_quizzes_banks_path,
+          context: course
+        )
+
+        item_banks_tab = tabs.find { |t| t[:id] == Course::TAB_ITEM_BANKS }
+        expect(item_banks_tab[:external]).to be false
+      end
+
+      it "strips args from the original tab" do
+        NewQuizzesHelper.override_item_banks_tab(
+          tabs:,
+          href: :course_new_quizzes_banks_path,
+          context: course
+        )
+
+        item_banks_tab = tabs.find { |t| t[:id] == Course::TAB_ITEM_BANKS }
+        expect(item_banks_tab).not_to have_key(:args)
+      end
+
+      it "preserves original css_class when none provided" do
+        NewQuizzesHelper.override_item_banks_tab(
+          tabs:,
+          href: :course_new_quizzes_banks_path,
+          context: course
+        )
+
+        item_banks_tab = tabs.find { |t| t[:id] == Course::TAB_ITEM_BANKS }
+        expect(item_banks_tab[:css_class]).to eq("context_external_tool_7")
+      end
+
+      it "overrides css_class when provided" do
+        NewQuizzesHelper.override_item_banks_tab(
+          tabs:,
+          href: :course_item_banks_path,
+          context: course,
+          css_class: "item_banks"
+        )
+
+        item_banks_tab = tabs.find { |t| t[:id] == Course::TAB_ITEM_BANKS }
         expect(item_banks_tab[:css_class]).to eq("item_banks")
       end
 

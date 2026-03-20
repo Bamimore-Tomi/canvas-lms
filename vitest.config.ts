@@ -118,7 +118,8 @@ export default defineConfig({
     jsx: 'automatic',
   },
   test: {
-    testTimeout: 15000,
+    testTimeout: 30000,
+    hookTimeout: 30000,
     environment: 'jsdom',
     // Use forks pool for better memory isolation between tests
     // Limit to 4 workers to balance parallelism with memory pressure
@@ -154,7 +155,7 @@ export default defineConfig({
     },
     globals: true,
     setupFiles: 'ui/setup-vitests.tsx',
-    include: ['ui/**/__tests__/**/*.test.?(c|m)[jt]s?(x)'],
+    include: ['ui/**/__tests__/**/*.(test|spec).?(c|m)[jt]s?(x)'],
     exclude: [
       // Exclude non-ui directories that vitest might auto-detect
       '**/node_modules/**',

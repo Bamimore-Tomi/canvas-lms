@@ -56,7 +56,6 @@ describe CanvasKaltura::ClientV3 do
   before do
     CanvasKaltura.cache = instance_double(ActiveSupport::Cache::Store, read: nil, write: nil)
     CanvasKaltura.logger = instance_double(Logger).as_null_object
-    CanvasKaltura.timeout_protector_proc = ->(_options, &block) { block.call }
     create_config
     WebMock.enable!
   end
@@ -133,7 +132,7 @@ describe CanvasKaltura::ClientV3 do
         { fileExt: "mp3", bitrate: "100", isOriginal: "0", hasWarnings: true },
         { fileExt: "mp4", bitrate: "100", isOriginal: "0", hasWarnings: true },
       ]
-      expect(@kaltura.sort_source_list(file_list).first[:isOriginal]).to_not eq "1"
+      expect(@kaltura.sort_source_list(file_list).first[:isOriginal]).not_to eq "1"
     end
 
     it "sorts by descending bitrate but deprioritize sources with suspiciously high bitrates" do
@@ -170,7 +169,7 @@ describe CanvasKaltura::ClientV3 do
 
       it "does not cache" do
         create_config_with_mock(0)
-        expect(CanvasKaltura.cache).to_not receive(:write)
+        expect(CanvasKaltura.cache).not_to receive(:write)
         @kaltura.media_sources("hi")
       end
 

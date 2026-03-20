@@ -995,6 +995,60 @@ describe Types::SubmissionType do
         end
       end
     end
+
+    context "previewUrl with legacy version missing course_id" do
+      let(:legacy_student) { student_in_course(course: @course, active_all: true).user }
+      let(:legacy_submission) { legacy_student.submissions.find_by!(assignment: legacy_assignment) }
+      let(:legacy_resolver) { GraphQLTypeTester.new(legacy_submission, current_user: @teacher, request: ActionDispatch::TestRequest.create) }
+
+      before do
+        legacy_assignment.submit_homework(legacy_student, submitted_at: 3.hours.ago, **legacy_homework_opts)
+        legacy_assignment.submit_homework(legacy_student, submitted_at: 2.hours.ago, **legacy_homework_opts)
+        legacy_assignment.submit_homework(legacy_student, **legacy_homework_opts)
+        legacy_submission.versions.each do |version|
+          model = version.model
+          model.course_id = nil
+          version.model = model
+          version.save!
+        end
+      end
+
+      context "regular submission" do
+        let(:legacy_assignment) { @course.assignments.create!(name: "legacy regular", submission_types: "online_text_entry", points_possible: 10) }
+        let(:legacy_homework_opts) { { body: "An attempt" } }
+
+        it "returns preview URLs for all submission histories" do
+          expect(legacy_submission.versions.map { |v| v.model.course_id }).to all(be_nil)
+          expect(
+            legacy_resolver.resolve("submissionHistoriesConnection { nodes { previewUrl }}")
+          ).to all(include("http://test.host/courses/#{@course.id}/assignments/#{legacy_assignment.id}/submissions/#{legacy_student.id}"))
+        end
+      end
+
+      context "anonymous submission" do
+        let(:legacy_assignment) { @course.assignments.create!(name: "legacy anon", submission_types: "online_text_entry", points_possible: 10, anonymous_grading: true) }
+        let(:legacy_homework_opts) { { body: "An attempt" } }
+
+        it "returns preview URLs for all submission histories" do
+          expect(legacy_submission.versions.map { |v| v.model.course_id }).to all(be_nil)
+          expect(
+            legacy_resolver.resolve("submissionHistoriesConnection { nodes { previewUrl }}")
+          ).to all(include("http://test.host/courses/#{@course.id}/assignments/#{legacy_assignment.id}/anonymous_submissions/#{legacy_submission.anonymous_id}"))
+        end
+      end
+
+      context "basic_lti_launch submission" do
+        let(:legacy_assignment) { @course.assignments.create!(name: "legacy lti", submission_types: "external_tool", points_possible: 10) }
+        let(:legacy_homework_opts) { { submission_type: "basic_lti_launch", url: "http://example.com/launch" } }
+
+        it "returns preview URLs for all submission histories" do
+          expect(legacy_submission.versions.map { |v| v.model.course_id }).to all(be_nil)
+          expect(
+            legacy_resolver.resolve("submissionHistoriesConnection { nodes { previewUrl }}")
+          ).to all(include("/courses/#{@course.id}/external_tools/retrieve"))
+        end
+      end
+    end
   end
 
   describe "late" do
@@ -1976,6 +2030,15 @@ describe Types::SubmissionType do
         expect(query_params[:resource_link_lookup_uuid]).to be_nil
         expect(preview_url).not_to include "resource_link_lookup_uuid"
       end
+
+      it "includes native experience sessionless override" do
+        @assignment.submit_homework(
+          @student,
+          submission_type: "basic_lti_launch",
+          url: "http://anexternaltoolsubmission.com"
+        )
+        expect(query_params[:new_quizzes_native_experience_sessionless]).to eq "false"
+      end
     end
 
     it "includes a 'version' query param that corresponds to the attempt number - 1 (and NOT the associated submission version number)" do
@@ -2509,9 +2572,10 @@ describe Types::SubmissionType do
 
   describe "auto_grade_submission_issues" do
     before do
+      allow(Feature.definitions["project_lhotse"]).to receive(:visible_on).and_return(proc { true })
       allow(GraphQLHelpers::AutoGradeEligibilityHelper).to receive(:validate_submission)
         .with(submission: @submission)
-        .and_return({ level: "error", message: "Test error" })
+        .and_return([{ level: "error", message: "Test error" }])
     end
 
     it "returns nil when project_lhotse feature flag is disabled" do
@@ -2523,6 +2587,7 @@ describe Types::SubmissionType do
     it "returns issues when project_lhotse feature flag is enabled" do
       @course.enable_feature!(:project_lhotse)
       expect(GraphQLHelpers::AutoGradeEligibilityHelper).to receive(:validate_submission)
+        .at_least(:once).and_return([{ level: "error", message: "Test error" }])
       level = submission_type.resolve("autoGradeSubmissionIssues { level }")
       message = submission_type.resolve("autoGradeSubmissionIssues { message }")
       expect(level).to eq "error"
@@ -2532,9 +2597,10 @@ describe Types::SubmissionType do
 
   describe "auto_grade_submission_errors" do
     before do
+      allow(Feature.definitions["project_lhotse"]).to receive(:visible_on).and_return(proc { true })
       allow(GraphQLHelpers::AutoGradeEligibilityHelper).to receive(:validate_submission)
         .with(submission: @submission)
-        .and_return({ level: "error", message: "Test error" })
+        .and_return([{ level: "error", message: "Test error" }])
     end
 
     it "returns empty array when project_lhotse feature flag is disabled" do
@@ -2545,8 +2611,42 @@ describe Types::SubmissionType do
 
     it "returns error messages when project_lhotse feature flag is enabled" do
       @course.enable_feature!(:project_lhotse)
-      expect(GraphQLHelpers::AutoGradeEligibilityHelper).to receive(:validate_submission)
-      expect(submission_type.resolve("autoGradeSubmissionErrors")).to eq(["Test error"])
+      result = submission_type.resolve("autoGradeSubmissionErrors")
+      expect(GraphQLHelpers::AutoGradeEligibilityHelper).to have_received(:validate_submission)
+      expect(result).to eq(["Test error"])
+    end
+  end
+
+  describe "auto_grade_eligibility" do
+    before do
+      allow(Feature.definitions["project_lhotse"]).to receive(:visible_on).and_return(proc { true })
+      allow(GraphQLHelpers::AutoGradeEligibilityHelper).to receive(:validate_submission)
+        .with(submission: @submission)
+        .and_return([{ level: "error", message: "No essay submission found." }, { level: "error", message: "Submission must be at least 5 words." }])
+    end
+
+    it "returns nil when project_lhotse feature flag is disabled" do
+      @course.disable_feature!(:project_lhotse)
+      expect(GraphQLHelpers::AutoGradeEligibilityHelper).not_to receive(:validate_submission)
+      expect(submission_type.resolve("autoGradeEligibility { issues { message } }")).to be_nil
+    end
+
+    it "returns all issues when project_lhotse feature flag is enabled" do
+      @course.enable_feature!(:project_lhotse)
+      result = submission_type.resolve("autoGradeEligibility { issues { message } }")
+      expect(result).to contain_exactly(
+        "No essay submission found.",
+        "Submission must be at least 5 words."
+      )
+    end
+
+    it "returns empty issues array when no issues exist" do
+      allow(GraphQLHelpers::AutoGradeEligibilityHelper).to receive(:validate_submission)
+        .with(submission: @submission)
+        .and_return([])
+      @course.enable_feature!(:project_lhotse)
+      result = submission_type.resolve("autoGradeEligibility { issues { message } }")
+      expect(result).to eq([])
     end
   end
 
@@ -2605,6 +2705,35 @@ describe Types::SubmissionType do
         attempts = result.flatten
         expect(attempts.length).to be > 1
       end
+    end
+  end
+
+  describe "aiGradeResult" do
+    let(:grade_data) do
+      [{ "id" => "criterion_1", "description" => "desc", "comments" => nil, "rating" => { "id" => "r1", "description" => "r desc", "rating" => 3.0, "reasoning" => nil } }]
+    end
+
+    it "returns nil when no result exists for the current attempt" do
+      expect(submission_type.resolve("aiGradeResult { attempt }")).to be_nil
+    end
+
+    it "returns nil for a student" do
+      AutoGradeResult.create!(submission: @submission, attempt: 1, grade_data:, grading_attempts: 1, root_account_id: @course.root_account_id)
+      student_type = GraphQLTypeTester.new(@submission, current_user: @student, request: ActionDispatch::TestRequest.create)
+      expect(student_type.resolve("aiGradeResult { attempt }")).to be_nil
+    end
+
+    it "returns the result for the matching attempt" do
+      AutoGradeResult.create!(submission: @submission, attempt: 1, grade_data:, grading_attempts: 1, root_account_id: @course.root_account_id)
+      expect(submission_type.resolve("aiGradeResult { attempt }")).to eq 1
+    end
+
+    it "returns nil for a different attempt" do
+      AutoGradeResult.create!(submission: @submission, attempt: 1, grade_data:, grading_attempts: 1, root_account_id: @course.root_account_id)
+      submission_attempt_2 = @assignment.grade_student(@student, score: 9, grader: @teacher).first
+      submission_attempt_2.update!(attempt: 2)
+      type = GraphQLTypeTester.new(submission_attempt_2, current_user: @teacher, request: ActionDispatch::TestRequest.create)
+      expect(type.resolve("aiGradeResult { attempt }")).to be_nil
     end
   end
 end

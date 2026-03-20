@@ -72,13 +72,20 @@ module NewQuizzes
         resource_link_id:,
         resource_link_title:,
         launch_presentation_return_url: return_url,
+        platform_redirect_url:,
 
         # UI version (extracted from launch URL in Consul)
-        ui_version: Services::NewQuizzes.ui_version
+        ui_version: Services::NewQuizzes.ui_version,
+
+        # Session params for result/grading launches (forwarded from external_tools_controller redirect)
+        participant_session_id: controller_param(:participant_session_id),
+        quiz_session_id: controller_param(:quiz_session_id),
       }.merge(standard_params)
 
       # Assignment-specific outcome service parameters
-      if @assignment
+      # Skip for result/grading launches (submission views) to match LTI behavior,
+      # where retrieve launches don't include outcome params
+      if @assignment && !result_launch?
         # Only include result sourcedid for learners
         if learner?
           params[:lis_result_sourcedid] = encode_source_id(@assignment)
@@ -157,10 +164,25 @@ module NewQuizzes
     end
 
     def return_url
+      # For result/grading launches (submission views), use the course URL
+      # to match LTI retrieve behavior where the return URL is the course page
+      if result_launch?
+        return @controller&.polymorphic_url([@context])
+      end
+
       # Generate return URL - match LTI launch behavior by using set_return_url
       # This intelligently determines the best return URL based on the referer
       # (quizzes page, gradebook, modules, etc.)
       @controller&.set_return_url
+    end
+
+    # For module item launches, construct the assignment URL with module_item_id.
+    # This mirrors the LTI flow where requestFullWindowLaunch.ts appends
+    # platform_redirect_url=window.location (the assignment page) to the second launch.
+    def platform_redirect_url
+      return nil unless @controller && @controller.params[:module_item_id].present? && @assignment
+
+      @controller.course_assignment_url(@context, @assignment, module_item_id: @controller.params[:module_item_id])
     end
 
     def roles
@@ -250,6 +272,15 @@ module NewQuizzes
         # (nil becomes empty string)
         value.to_s
       end
+    end
+
+    def controller_param(key)
+      @controller&.params&.[](key).presence
+    end
+
+    # Result/grading launch (viewing a submission), indicated by participant_session_id
+    def result_launch?
+      controller_param(:participant_session_id).present?
     end
 
     # Memoized substitutions helper for role and variable expansion

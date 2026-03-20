@@ -42,6 +42,7 @@ class AssignmentsController < ApplicationController
 
   before_action :load_canvas_career, only: %i[index show syllabus]
   before_action :redirect_peer_review_sub_assignment, only: [:show]
+  skip_before_action :require_user, only: %i[index show syllabus]
 
   include K5Mode
 
@@ -125,9 +126,20 @@ class AssignmentsController < ApplicationController
   end
 
   def render_a2_peer_review_student_view?
-    @current_user.present? && @assignment.a2_enabled? && !can_do(@context, @current_user, :read_as_admin) &&
+    @current_user.present? && @assignment.a2_enabled? &&
+      (!can_do(@context, @current_user, :read_as_admin) || user_assigned_as_student?) &&
       @assignment.peer_reviews && @context.feature_enabled?(:peer_review_allocation_and_grading) &&
       (!params.key?(:assignments_2) || value_to_boolean(params[:assignments_2]))
+  end
+
+  def user_assigned_as_student?
+    @context.student_enrollments.where(user: @current_user).exists? &&
+      AssignmentVisibility::AssignmentVisibilityService
+        .assignments_visible_to_students(
+          assignment_ids: [@assignment.id],
+          course_ids: [@context.id],
+          user_ids: [@current_user.id]
+        ).any?
   end
 
   def a2_active_student_and_enrollment
@@ -174,7 +186,7 @@ class AssignmentsController < ApplicationController
              scaling_factor: grading_standard.scaling_factor,
              enhanced_rubrics_enabled: @context.feature_enabled?(:enhanced_rubrics),
              course_pacing_enabled: @context.enable_course_paces,
-             peer_review_allocation_and_grading: @context.feature_enabled?(:peer_review_allocation_and_grading),
+             peer_review_allocation_and_grading: @context.feature_enabled?(:peer_review_allocation_and_grading) && @assignment.peer_review_sub_assignment.present?,
            })
 
     if peer_review_mode_enabled
@@ -320,7 +332,7 @@ class AssignmentsController < ApplicationController
         flash.now[:notice] = t("assignment_submit_success", "Assignment successfully submitted.") if params[:submitted]
 
         # override media comment context: in the show action, these will be submissions
-        js_env media_comment_asset_string: @current_user.asset_string if @current_user
+        js_env({ media_comment_asset_string: @current_user.asset_string }) if @current_user
 
         @assignment = AssignmentOverrideApplicator.assignment_overridden_for(@assignment, @current_user)
         @assignment.ensure_assignment_group
@@ -366,9 +378,9 @@ class AssignmentsController < ApplicationController
           js_env({ OBSERVER_OPTIONS: {
                    OBSERVED_USERS_LIST: observed_users(@current_user, session, @context.id),
                    CAN_ADD_OBSERVEE: @current_user
-                                      .profile
-                                      .tabs_available(@current_user, root_account: @domain_root_account)
-                                      .any? { |t| t[:id] == UserProfile::TAB_OBSERVEES }
+                                     .profile
+                                     .tabs_available(@current_user, root_account: @domain_root_account)
+                                     .any? { |t| t[:id] == UserProfile::TAB_OBSERVEES }
                  } })
 
           student_to_view, active_enrollment = a2_active_student_and_enrollment
@@ -625,8 +637,10 @@ class AssignmentsController < ApplicationController
       assigned_rubric = rubric_json(rubric_association.rubric, @current_user, session, style: "full")
       assigned_rubric[:unassessed] = Rubric.active.unassessed.where(id: rubric_association.rubric.id).exists?
       assigned_rubric[:can_update] = can_update_rubric
-      assigned_rubric[:association_count] = RubricAssociation.active.where(rubric_id: rubric_association.rubric.id, association_type: "Assignment").count
+      assigned_rubric[:association_count] = RubricAssociation.active.where(rubric_id: rubric_association.rubric.id).count
       rubric_association = rubric_association_json(rubric_association, @current_user, session)
+      rubric_association[:can_update] = can_do(assignment.rubric_association, @current_user, :update)
+      rubric_association[:can_delete] = can_do(assignment.rubric_association, @current_user, :delete)
     end
 
     render json: { assigned_rubric:, rubric_association: }
@@ -745,7 +759,18 @@ class AssignmentsController < ApplicationController
       return render_a2_peer_review_student_view
     end
 
-    if @context.feature_enabled?(:peer_review_allocation_and_grading) && authorized_action(@assignment, @current_user, :grade)
+    if @context.feature_enabled?(:peer_review_allocation_and_grading)
+      unless @assignment.grants_right?(@current_user, session, :grade) && !user_assigned_as_student?
+        @unauthorized_message = t("Please contact your Canvas Administrator, as one or more of the following feature options is not enabled to view this Peer Review Assignment:")
+        @unauthorized_details = [
+          t("Peer Review Allocation and Grading"),
+          t("Assignment Enhancements - Student"),
+          t("Enhanced Rubrics"),
+          t("Performance and Usability Upgrades for SpeedGrader"),
+        ]
+        render "shared/unauthorized", status: :unauthorized
+        return
+      end
       redirect_to named_context_url(@context, :context_assignment_url, @assignment.id, open_allocation_tray: true)
       return
     end
@@ -903,7 +928,7 @@ class AssignmentsController < ApplicationController
       @assignment.points_possible = params[:points_possible] if params[:points_possible]
       @assignment.submission_types = params[:submission_types] if params[:submission_types]
       @assignment.assignment_group_id = params[:assignment_group_id] if params[:assignment_group_id]
-      @assignment.ensure_assignment_group(false)
+      @assignment.ensure_assignment_group(save: false)
       if @context.root_account.suppress_assignments?
         @assignment.suppress_assignment = value_to_boolean(params[:suppress_assignment]) if params.key?(:suppress_assignment)
       end
@@ -1331,15 +1356,17 @@ class AssignmentsController < ApplicationController
   end
 
   def set_section_list_js_env
-    js_env SECTION_LIST: @context.course_sections.active.map { |section|
-      {
-        id: section.id,
-        name: section.name,
-        start_at: section.start_at,
-        end_at: section.end_at,
-        override_course_and_term_dates: section.restrict_enrollments_to_section_dates
-      }
-    }
+    js_env({
+             SECTION_LIST: @context.course_sections.active.map do |section|
+               {
+                 id: section.id,
+                 name: section.name,
+                 start_at: section.start_at,
+                 end_at: section.end_at,
+                 override_course_and_term_dates: section.restrict_enrollments_to_section_dates
+               }
+             end
+           })
   end
 
   # LTI 1.3 Asset Processor Eula Service
@@ -1347,7 +1374,7 @@ class AssignmentsController < ApplicationController
     return unless @current_user
     return unless @context_enrollment&.student?
 
-    js_env ASSET_PROCESSOR_EULA_LAUNCH_URLS: Lti::EulaUiService.eula_launch_urls(user: @current_user, assignment: @assignment)
+    js_env({ ASSET_PROCESSOR_EULA_LAUNCH_URLS: Lti::EulaUiService.eula_launch_urls(user: @current_user, assignment: @assignment) })
   end
 
   def redirect_peer_review_sub_assignment

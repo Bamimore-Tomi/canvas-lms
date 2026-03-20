@@ -710,7 +710,7 @@ describe CoursesController do
         enrollment.reload
 
         expect(enrollment.workflow_state).to eq "invited"
-        expect(enrollment).to_not be_invited # state_based_on_date
+        expect(enrollment).not_to be_invited # state_based_on_date
 
         user_session(@student)
         get_index
@@ -1121,7 +1121,7 @@ describe CoursesController do
 
     it "sets ams remote settings in the remote env" do
       subject
-      expect(controller.remote_env[:ams]).to_not be_nil
+      expect(controller.remote_env[:ams]).not_to be_nil
     end
 
     it "sets the external tools create url" do
@@ -2518,6 +2518,48 @@ describe CoursesController do
         expect(assigns[:js_env][:ACTIVE_TAG_CONVERSION_JOB]).to be_truthy
       end
     end
+
+    context "intelligent_insights_modernisation feature flag" do
+      let(:launch_url) { "https://example.com/canvas_course_criteria" }
+
+      before do
+        allow(Services::CanvasCourseCriteria).to receive(:launch_url).and_return(launch_url)
+        user_session(@teacher)
+      end
+
+      context "when feature is enabled" do
+        before do
+          @course.account.enable_feature!(:intelligent_insights_modernisation)
+        end
+
+        it "sets canvas_course_criteria launch_url in remote_env" do
+          get "show", params: { id: @course.id }
+          expect(controller.remote_env[:canvas_course_criteria]).to eq({ launch_url: })
+        end
+
+        it "sets CANVAS_COURSE_CRITERIA.COURSE_ID in js_env" do
+          get "show", params: { id: @course.id }
+          expect(assigns[:js_env][:CANVAS_COURSE_CRITERIA][:COURSE_ID]).to eq(@course.id)
+        end
+
+        it "sets CANVAS_COURSE_CRITERIA.ACCOUNT_ID in js_env" do
+          get "show", params: { id: @course.id }
+          expect(assigns[:js_env][:CANVAS_COURSE_CRITERIA][:ACCOUNT_ID]).to eq(@course.account.id.to_s)
+        end
+      end
+
+      context "when feature is disabled" do
+        it "does not set canvas_course_criteria in remote_env" do
+          get "show", params: { id: @course.id }
+          expect(controller.remote_env[:canvas_course_criteria]).to be_nil
+        end
+
+        it "does not set CANVAS_COURSE_CRITERIA in js_env" do
+          get "show", params: { id: @course.id }
+          expect(assigns[:js_env][:CANVAS_COURSE_CRITERIA]).to be_nil
+        end
+      end
+    end
   end
 
   describe "POST 'unenroll_user'" do
@@ -2630,7 +2672,7 @@ describe CoursesController do
       expect(response).to be_successful
       @course.reload
       expect(@course.students.map(&:name)).to include("Sam")
-      expect(@course.student_enrollments.find_by(role_id: role.id)).to_not be_nil
+      expect(@course.student_enrollments.find_by(role_id: role.id)).not_to be_nil
     end
 
     it "allows TAs to enroll Observers (by default)" do
@@ -3389,14 +3431,14 @@ describe CoursesController do
         put "update", params: { id: @course.id, course: { is_public: true } }
 
         @assignment.reload
-        expect(@assignment.updated_at).to_not eq @time
+        expect(@assignment.updated_at).not_to eq @time
       end
 
       it "touches content when is_public_to_auth_users is updated" do
         put "update", params: { id: @course.id, course: { is_public_to_auth_users: true } }
 
         @assignment.reload
-        expect(@assignment.updated_at).to_not eq @time
+        expect(@assignment.updated_at).not_to eq @time
       end
 
       it "does not touch content when neither is updated" do
@@ -3420,7 +3462,7 @@ describe CoursesController do
       put "update", params: { id: @course.id, course: { name:, syllabus_body: body } }
 
       @course.reload
-      expect(@course.name).to_not eq name
+      expect(@course.name).not_to eq name
       expect(@course.syllabus_body).to eq body
     end
 
@@ -3556,7 +3598,7 @@ describe CoursesController do
 
         expected_associations = [["syllabus_body", @image.id],
                                  ["syllabus_body", media.id]]
-        expect(@course.attachment_associations.pluck(:context_concern, :attachment_id)).to match_array(expected_associations)
+        expect(@course.reload.attachment_associations.pluck(:context_concern, :attachment_id)).to match_array(expected_associations)
       end
 
       it "removes attachment_associations when files are removed from the syllabus" do
@@ -3566,7 +3608,7 @@ describe CoursesController do
         HTML
         put "update", params: { id: @course.id, course: { syllabus_body: new_body }, format: :json }
 
-        expect(@course.attachment_associations.pluck(:context_concern, :attachment_id)).to match_array([["syllabus_body", media.id]])
+        expect(@course.reload.attachment_associations.pluck(:context_concern, :attachment_id)).to match_array([["syllabus_body", media.id]])
       end
 
       it "does not call update_associations when the syllabus body doesn't change" do
@@ -3752,7 +3794,7 @@ describe CoursesController do
                       course: { blueprint: "1",
                                 blueprint_restrictions: { "content" => "1", "doo_dates" => "1" } } },
             format: "json"
-        expect(response).to_not be_successful
+        expect(response).not_to be_successful
         expect(response.body).to include "Invalid restrictions"
       end
 
@@ -3787,7 +3829,7 @@ describe CoursesController do
                       course: { blueprint: "1",
                                 blueprint_restrictions_by_object_type: { "notarealtype" => { "content" => "1", "due_dates" => "1" } } } },
             format: "json"
-        expect(response).to_not be_successful
+        expect(response).not_to be_successful
         expect(response.body).to include "Invalid restrictions"
       end
 
@@ -3840,7 +3882,7 @@ describe CoursesController do
     it "does not attempt to sync k5 homeroom to course if sync_enrollments_from_homeroom is falsey" do
       teacher = @teacher
       subject = @course
-      toggle_k5_setting(subject.account, true)
+      toggle_k5_setting(subject.account)
       homeroom = course_factory(active_all: true, account: subject.account)
       homeroom.enroll_teacher(teacher, enrollment_state: :active)
       homeroom.homeroom_course = true
@@ -3898,7 +3940,7 @@ describe CoursesController do
     end
 
     it "does not allow homeroom course to enable course pacing" do
-      toggle_k5_setting(@course.account, true)
+      toggle_k5_setting(@course.account)
       homeroom = course_factory(active_all: true, account: @course.account)
       homeroom.homeroom_course = true
       homeroom.save!
@@ -4676,7 +4718,7 @@ describe CoursesController do
       expect(test_student.submissions.size).not_to be_zero
       submission = test_student.submissions.first
       auditor_rec = submission.auditor_grade_change_records.first
-      expect(auditor_rec).to_not be_nil
+      expect(auditor_rec).not_to be_nil
       attachment = attachment_model
       attachment.create_canvadoc
       canvadocs_submission = attachment.canvadoc.canvadocs_submissions.find_or_create_by(submission_id: submission.id)
@@ -4856,7 +4898,7 @@ describe CoursesController do
         per_page: 1
       }
       expect(response).to be_successful
-      expect(response.headers.to_a.find { |a| a.first.downcase == "link" }.last).to_not include("last")
+      expect(response.headers.to_a.find { |a| a.first.downcase == "link" }.last).not_to include("last")
     end
 
     it "only returns group_ids for active group memberships when requested" do
@@ -5030,6 +5072,102 @@ describe CoursesController do
         expect(response).to be_successful
         expect(json.length).to eq(1)
         expect(json[0]).to include({ "id" => student1.id })
+      end
+    end
+
+    describe "has_non_collaborative_groups" do
+      before :once do
+        course.account.settings[:allow_assign_to_differentiation_tags] = { value: true }
+        course.account.save!
+      end
+
+      let(:diff_tag_category) { course.group_categories.create!(name: "Tag Category", non_collaborative: true) }
+
+      let(:diff_tag) do
+        diff_tag_category.groups.create!(context: course, name: "Tag Group", non_collaborative: true)
+      end
+
+      it "includes has_non_collaborative_groups for users with the manage_tags_manage permission" do
+        diff_tag.add_user(student1)
+        user_session(teacher)
+
+        get "users", params: {
+          course_id: course.id,
+          format: "json",
+          enrollment_role: "StudentEnrollment"
+        }
+        json = json_parse(response.body)
+        tagged_user = json.find { |u| u["id"] == student1.id }
+        untagged_user = json.find { |u| u["id"] == student2.id }
+
+        expect(tagged_user["has_non_collaborative_groups"]).to be true
+        expect(untagged_user["has_non_collaborative_groups"]).to be false
+      end
+
+      it "does not include has_non_collaborative_groups for users without the manage_tags_manage permission" do
+        course.account.role_overrides.create!(permission: :manage_tags_manage, role: teacher_role, enabled: false)
+        user_session(teacher)
+
+        get "users", params: {
+          course_id: course.id,
+          format: "json",
+          enrollment_role: "StudentEnrollment"
+        }
+        json = json_parse(response.body)
+
+        json.each do |user|
+          expect(user).not_to have_key("has_non_collaborative_groups")
+        end
+      end
+
+      it "ignores deleted group memberships" do
+        diff_tag.add_user(student1)
+        diff_tag.group_memberships.find_by(user_id: student1.id).update!(workflow_state: "deleted")
+        user_session(teacher)
+
+        get "users", params: {
+          course_id: course.id,
+          format: "json",
+          enrollment_role: "StudentEnrollment"
+        }
+        json = json_parse(response.body)
+        tagged_user = json.find { |u| u["id"] == student1.id }
+
+        expect(tagged_user["has_non_collaborative_groups"]).to be false
+      end
+
+      it "ignores deleted groups" do
+        diff_tag.add_user(student1)
+        diff_tag.update!(workflow_state: "deleted")
+        user_session(teacher)
+
+        get "users", params: {
+          course_id: course.id,
+          format: "json",
+          enrollment_role: "StudentEnrollment"
+        }
+        json = json_parse(response.body)
+        tagged_user = json.find { |u| u["id"] == student1.id }
+
+        expect(tagged_user["has_non_collaborative_groups"]).to be false
+      end
+
+      it "ignores non-collaborative groups from other courses" do
+        other_course = Course.create!
+        other_category = other_course.group_categories.create!(name: "Other Tags", non_collaborative: true)
+        other_tag = other_category.groups.create!(context: other_course, name: "Other Tag", non_collaborative: true)
+        other_tag.add_user(student1)
+        user_session(teacher)
+
+        get "users", params: {
+          course_id: course.id,
+          format: "json",
+          enrollment_role: "StudentEnrollment"
+        }
+        json = json_parse(response.body)
+        tagged_user = json.find { |u| u["id"] == student1.id }
+
+        expect(tagged_user["has_non_collaborative_groups"]).to be false
       end
     end
   end
@@ -5221,7 +5359,7 @@ describe CoursesController do
         end
 
         get "content_share_users", params: { course_id: @course.id, search_term: "hiyo" }
-        expect(sql).to_not include(@shard1.name) # can't just check for success since the query can still work depending on test shard setup
+        expect(sql).not_to include(@shard1.name) # can't just check for success since the query can still work depending on test shard setup
       end
     end
   end
@@ -6582,7 +6720,8 @@ describe CoursesController do
           tabs: [
             { "id" => "assignments", "label" => "Assignments" },
             { "id" => "announcements", "label" => "Announcements", "hidden" => true }
-          ]
+          ],
+          can_manage_links: false
         )
         .and_return(processed_tabs)
 
@@ -6602,6 +6741,47 @@ describe CoursesController do
       put :update_nav, params: { course_id: @course.id, tabs_json: }
 
       expect(response).to be_unauthorized
+    end
+
+    context "with manage_nav_menu_links permission" do
+      it "passes can_manage_links: true when user has permission" do
+        user_session(@teacher)
+        @course.root_account.enable_feature!(:nav_menu_links)
+
+        # Grant the permission
+        role = @teacher.enrollments.first.role
+        @course.root_account.role_overrides.create!(permission: :manage_nav_menu_links, role:, enabled: true)
+
+        tabs_json = [
+          { id: "assignments" },
+          { href: "nav_menu_link_url", args: ["https://example.com"], label: "New Link" }
+        ].to_json
+
+        expect(NavMenuLinkTabs).to receive(:sync_course_links_with_tabs)
+          .with(hash_including(can_manage_links: true))
+          .and_call_original
+
+        put :update_nav, params: { course_id: @course.id, tabs_json: }
+
+        expect(response).to be_redirect
+      end
+
+      it "passes can_manage_links: false when user lacks permission" do
+        user_session(@teacher)
+        @course.root_account.enable_feature!(:nav_menu_links)
+
+        # Permission is not granted (default is false)
+
+        tabs_json = [{ id: "assignments" }].to_json
+
+        expect(NavMenuLinkTabs).to receive(:sync_course_links_with_tabs)
+          .with(hash_including(can_manage_links: false))
+          .and_call_original
+
+        put :update_nav, params: { course_id: @course.id, tabs_json: }
+
+        expect(response).to be_redirect
+      end
     end
   end
 end

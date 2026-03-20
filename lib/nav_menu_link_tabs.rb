@@ -25,6 +25,15 @@ module NavMenuLinkTabs
 
   module_function
 
+  def account_tabs(account)
+    tabs_for_context_and_nav_type(
+      scope:
+        NavMenuLink.where(context: account.account_chain, account_nav: true)
+        .order(:account_id, :id),
+      link_context_type: "account"
+    )
+  end
+
   def course_tabs(course)
     course_context_tabs = tabs_for_context_and_nav_type(
       scope: NavMenuLink.where(context: course),
@@ -33,7 +42,7 @@ module NavMenuLinkTabs
     account_context_tabs = tabs_for_context_and_nav_type(
       scope:
         NavMenuLink.where(context: course.account_chain, course_nav: true)
-                   .order(:account_id, :id),
+        .order(:account_id, :id),
       link_context_type: "account"
     )
 
@@ -64,7 +73,8 @@ module NavMenuLinkTabs
   # * Creates new links (with linkUrl and no id) and replaces them with {id: "nav_menu_link_123"}
   # * Filtering out any links that are for the wrong context / nav type
   # (Note that course-context course all have only course_nav: true)
-  def sync_course_links_with_tabs(course:, tabs:)
+  # @param can_manage_links [Boolean] If false, skip creating/deleting links (but allow rearranging)
+  def sync_course_links_with_tabs(course:, tabs:, can_manage_links: false)
     raise ArgumentError unless course.is_a?(Course)
 
     tabs = tabs.map(&:with_indifferent_access)
@@ -86,10 +96,16 @@ module NavMenuLinkTabs
         new_link_url = (tab[:args].is_a?(Array) && tab[:args][0].is_a?(String)) ? tab[:args][0] : nil
 
         if id.nil? && tab[:href].to_s == TAB_HREF_VALUE.to_s && new_link_url.present?
-          new_link = NavMenuLink.create!(context: course, course_nav: true, url: new_link_url, label: tab[:label])
-          { id: numeric_id_to_tab_json_id(new_link.id), hidden: tab[:hidden] }.compact.with_indifferent_access
+          if can_manage_links
+            new_link = NavMenuLink.create!(context: course, course_nav: true, url: new_link_url, label: tab[:label])
+            { id: numeric_id_to_tab_json_id(new_link.id), hidden: tab[:hidden] }.compact.with_indifferent_access
+          else
+            # User lacks permission to create links, skip this tab
+            Rails.logger.info("NavMenuLinkTabs.sync_course_links_with_tabs: Skipping link creation due to lack of permission")
+            nil
+          end
         elsif id.nil?
-          Rails.logger.warn("NavMenuLinkTabs.sync_course_links_with_tabs: Ignoring invalid tab: #{tab.inspect}")
+          Rails.logger.warn("NavMenuLinkTabs.sync_course_links_with_tabs: Ignoring invalid tab: (id is nil)")
           nil
         elsif numeric_id.nil? || current_valid_link_ids.include?(numeric_id)
           # Non-link, or reference to valid link in our account chain
@@ -100,7 +116,12 @@ module NavMenuLinkTabs
         end
       end
 
-      NavMenuLink.where(id: course_links_to_delete).destroy_all
+      # Only delete links if user has permission
+      if can_manage_links && course_links_to_delete.any?
+        NavMenuLink.where(id: course_links_to_delete).destroy_all
+      elsif !can_manage_links && course_links_to_delete.any?
+        Rails.logger.info("NavMenuLinkTabs.sync_course_links_with_tabs: Skipping link deletion due to lack of permission")
+      end
 
       result
     end

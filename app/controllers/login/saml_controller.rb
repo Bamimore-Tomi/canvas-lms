@@ -26,6 +26,7 @@ class Login::SamlController < ApplicationController
   before_action :forbid_on_files_domain
   before_action :run_login_hooks, only: [:new, :create]
   before_action :fix_ms_office_redirects, only: :new
+  skip_before_action :require_user, only: %i[new create destroy metadata observee_validation]
 
   def new
     aac
@@ -135,6 +136,8 @@ class Login::SamlController < ApplicationController
     end
 
     aac.debug_set(:is_valid_login_response, "true") if debugging
+
+    persist_saml_signing_certificates(aac, response)
 
     # for parent using self-registration to observe a student
     # the student is logged out after validation
@@ -442,6 +445,30 @@ class Login::SamlController < ApplicationController
         scope.find(id)
       end
     end
+  end
+
+  def persist_saml_signing_certificates(aac, response)
+    return unless Account.site_admin.feature_enabled?(:record_saml_certificates)
+    return unless aac.synthetic_metadata? && aac.certificate_fingerprint.present?
+
+    signing_keys = [response, *response.assertions].filter_map(&:signing_key).select(&:certificate)
+    return unless signing_keys.any?
+
+    stored_fingerprints = aac.certificate_fingerprint.split.map { |fp| SAML2::KeyInfo.format_fingerprint(fp) }
+    existing_certs, existing_fingerprints = (aac.settings["signing_certificates"] || []).map do |cert_b64|
+      cert = OpenSSL::X509::Certificate.new(Base64.decode64(cert_b64))
+      [cert_b64, SAML2::KeyInfo.format_fingerprint(Digest::SHA1.hexdigest(cert.to_der))]
+    end.select { |_, fp| stored_fingerprints.include?(fp) }.transpose
+    existing_certs ||= []
+    existing_fingerprints ||= []
+    new_certs = signing_keys
+                .select { |key| stored_fingerprints.include?(key.fingerprint) && !existing_fingerprints.include?(key.fingerprint) }
+                .map(&:x509)
+                .uniq
+    return unless new_certs.any?
+
+    aac.settings["signing_certificates"] = existing_certs + new_certs
+    aac.save!
   end
 
   def complete_observee_addition(registration_data)

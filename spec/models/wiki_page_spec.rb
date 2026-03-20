@@ -58,7 +58,7 @@ describe WikiPage do
     p.notify_of_update = true
     p.save!
     p.update(body: "Awgawg")
-    expect(p.messages_sent["Updated Wiki Page"].map(&:user)).to_not include(@student)
+    expect(p.messages_sent["Updated Wiki Page"].map(&:user)).not_to include(@student)
   end
 
   it "only sends page updated notifications to students assigned to the page" do
@@ -384,7 +384,7 @@ describe WikiPage do
     p1.save
 
     # doesn't delete the lookups
-    expect(p1.current_lookup).to_not be_nil
+    expect(p1.current_lookup).not_to be_nil
 
     # therefore we can't reuse the url
     p2 = @course.wiki_pages.create(title: "Asdf")
@@ -403,6 +403,24 @@ describe WikiPage do
     course_with_teacher(active_all: true)
     wp = @course.wiki_pages.create!(title: "Asdf")
     expect(wp.root_account_id).to eql @course.root_account_id
+  end
+
+  it "versions attachment associations with the page" do
+    course_with_teacher
+    attachment_model(context: @course)
+    page = @course.wiki_pages.create!(title: "meh", body: "file linke: <a href='/courses/#{@course.id}/files/#{@attachment.id}/download'>file</a>", updating_user: @teacher)
+    page.reload.update(body: "meh", updating_user: @teacher)
+
+    expect(YAML.load(page.reload.versions.find_by(number: 1).yaml)["attachment_associations"][0]).to include({
+                                                                                                               attachment_id: @attachment.id,
+                                                                                                               context_id: page.id,
+                                                                                                               context_type: "WikiPage",
+                                                                                                               root_account_id: @course.root_account_id,
+                                                                                                               user_id: @teacher.id,
+                                                                                                               context_concern: nil
+                                                                                                             })
+
+    expect(YAML.load(page.reload.versions.find_by(number: 2).yaml)["attachment_associations"]).to eq([])
   end
 
   context "unpublished" do
@@ -1819,7 +1837,7 @@ describe WikiPage do
     end
     let(:wiki_page) { horizon_course.wiki_pages.create!(title: "Test Page", body: "<p>Test content</p>") }
     let(:pine_client_mock) { class_double(PineClient) }
-    let(:null_user) { Struct.new(:uuid, :global_id, keyword_init: true).new(uuid: nil, global_id: nil) }
+    let(:null_user) { Struct.new(:uuid, :global_id).new(uuid: nil, global_id: nil) }
 
     before do
       allow(pine_client_mock).to receive_messages(enabled?: true, delete_document: true)

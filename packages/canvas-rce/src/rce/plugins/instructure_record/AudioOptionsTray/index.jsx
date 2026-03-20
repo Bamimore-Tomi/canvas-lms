@@ -16,22 +16,30 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import React, {useState, useEffect} from 'react'
-import {arrayOf, bool, func, shape, string} from 'prop-types'
-import {Flex} from '@instructure/ui-flex'
-import {Tray} from '@instructure/ui-tray'
-import {FormFieldGroup} from '@instructure/ui-form-field'
-import {ClosedCaptionPanel, ClosedCaptionPanelV2, CONSTANTS} from '@instructure/canvas-media'
+import {
+  ClosedCaptionPanel,
+  ClosedCaptionPanelV2,
+  CONSTANTS,
+  trackPendoEvent,
+} from '@instructure/canvas-media'
 import {Button, CloseButton} from '@instructure/ui-buttons'
-import {Spinner} from '@instructure/ui-spinner'
-import {StoreProvider} from '../../shared/StoreContext'
-import Bridge from '../../../../bridge'
-import RceApiSource, {originFromHost} from '../../../../rcs/api'
-import formatMessage from '../../../../format-message'
-import {getTrayHeight} from '../../shared/trayUtils'
-import {instuiPopupMountNodeFn} from '../../../../util/fullscreenHelpers'
+import {Checkbox, CheckboxGroup} from '@instructure/ui-checkbox'
+import {Flex} from '@instructure/ui-flex'
+import {FormFieldGroup} from '@instructure/ui-form-field'
 import {Heading} from '@instructure/ui-heading'
+import {Spinner} from '@instructure/ui-spinner'
+import {Tooltip} from '@instructure/ui-tooltip'
+import {Tray} from '@instructure/ui-tray'
+import {arrayOf, bool, func, shape, string} from 'prop-types'
+import React, {useEffect, useRef, useState} from 'react'
+import Bridge from '../../../../bridge'
+import formatMessage from '../../../../format-message'
 import RCEGlobals from '../../../../rce/RCEGlobals'
+import RceApiSource, {originFromHost} from '../../../../rcs/api'
+import {instuiPopupMountNodeFn} from '../../../../util/fullscreenHelpers'
+import {StoreProvider} from '../../shared/StoreContext'
+import {getTrayHeight} from '../../shared/trayUtils'
+import {mapViewerRestrictions, readViewerRestrictions} from '../utils'
 
 const getLiveRegion = () => document.getElementById('flash_screenreader_holder')
 
@@ -49,14 +57,31 @@ export default function AudioOptionsTray({
 }) {
   const [subtitles, setSubtitles] = useState(audioOptions.tracks || [])
   const api = new RceApiSource(trayProps)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const fetchedFromIframeRef = useRef(false)
+
+  const [viewerRestrictions, setViewerRestrictions] = useState(() =>
+    readViewerRestrictions(audioOptions.viewerRestrictions),
+  )
 
   useEffect(() => {
-    if (!isLoading && subtitles.length === 0) {
+    if (!isLoading && subtitles.length === 0 && !fetchedFromIframeRef.current) {
+      // only request subtitle data after mount
+      fetchedFromIframeRef.current = true
       requestSubtitlesFromIframe(setSubtitles)
     }
   }, [isLoading, subtitles.length, requestSubtitlesFromIframe])
 
   const isAsrCaptioningImprovements = RCEGlobals.getFeatures()?.rce_asr_captioning_improvements
+
+  useEffect(() => {
+    if (open && isAsrCaptioningImprovements) {
+      trackPendoEvent('canvas_media_options_opened', {
+        entry_point: 'quick_menu',
+        media_kind: 'audio',
+      })
+    }
+  }, [open, isAsrCaptioningImprovements])
 
   const handleUpdateSubtitles = newSubtitles => {
     setSubtitles(newSubtitles)
@@ -68,7 +93,12 @@ export default function AudioOptionsTray({
       subtitles,
       attachment_id: audioOptions.attachmentId,
       updateMediaObject: contentProps.updateMediaObject,
+      viewerRestrictions: mapViewerRestrictions(viewerRestrictions),
     })
+  }
+
+  const handleDirtyCheck = isDirty => {
+    setHasUnsavedChanges(isDirty)
   }
 
   return (
@@ -114,6 +144,22 @@ export default function AudioOptionsTray({
                 <Flex justifyItems="space-between" direction="column" height="100%">
                   <Flex.Item shouldGrow={true} padding="small" shouldShrink={true}>
                     <Flex direction="column">
+                      {isAsrCaptioningImprovements && (
+                        <Flex.Item padding="small">
+                          <CheckboxGroup
+                            name="viewer-restrictions"
+                            onChange={setViewerRestrictions}
+                            defaultValue={viewerRestrictions}
+                            description={formatMessage('Viewer Restrictions')}
+                          >
+                            <Checkbox
+                              variant="toggle"
+                              label={formatMessage('Show Rolling Transcript')}
+                              value="show_rolling_transcript"
+                            />
+                          </CheckboxGroup>
+                        </Flex.Item>
+                      )}
                       <Flex.Item padding="small">
                         <FormFieldGroup description={formatMessage('Closed Captions/Subtitles')}>
                           {!isAsrCaptioningImprovements ? (
@@ -122,6 +168,7 @@ export default function AudioOptionsTray({
                               subtitles={subtitles.map(st => ({
                                 locale: st.locale,
                                 file: {name: st.language || st.locale},
+                                asr: Boolean(st.asr),
                               }))}
                               uploadMediaTranslations={Bridge.uploadMediaTranslations}
                               languages={Bridge.languages}
@@ -131,8 +178,9 @@ export default function AudioOptionsTray({
                           ) : (
                             <ClosedCaptionPanelV2
                               subtitles={subtitles.map(st => ({
-                                locale: st.locale,
+                                ...st,
                                 file: {name: st.language || st.locale},
+                                asr: Boolean(st.asr),
                               }))}
                               languages={Bridge.languages}
                               userLocale={Bridge.userLocale}
@@ -158,6 +206,7 @@ export default function AudioOptionsTray({
                                 setSubtitles(prev => prev.filter(s => s.locale !== locale))
                                 onCaptionsModified?.()
                               }}
+                              onDirtyStateChanged={handleDirtyCheck}
                             />
                           )}
                         </FormFieldGroup>
@@ -170,9 +219,17 @@ export default function AudioOptionsTray({
                     padding="small medium"
                     textAlign="end"
                   >
-                    <Button onClick={e => handleSave(e, contentProps)} color="primary">
-                      {formatMessage('Done')}
-                    </Button>
+                    <Tooltip
+                      renderTip={formatMessage('Unsaved changes will be lost.')}
+                      placement="top"
+                      on={['hover', 'focus']}
+                      preventTooltip={!hasUnsavedChanges}
+                      mountNode={instuiPopupMountNodeFn}
+                    >
+                      <Button onClick={e => handleSave(e, contentProps)} color="primary">
+                        {formatMessage('Done')}
+                      </Button>
+                    </Tooltip>
                   </Flex.Item>
                 </Flex>
               </Flex.Item>
@@ -203,6 +260,9 @@ AudioOptionsTray.propTypes = {
         locale: string.isRequired,
       }),
     ),
+    viewerRestrictions: shape({
+      show_rolling_transcript: bool,
+    }),
   }).isRequired,
   onCaptionsModified: func,
   isLoading: bool,

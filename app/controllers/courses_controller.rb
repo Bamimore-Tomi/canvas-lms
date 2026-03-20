@@ -360,9 +360,30 @@ class CoursesController < ApplicationController
   include ObserverEnrollmentsHelper
   include DefaultDueTimeHelper
 
-  before_action :require_user, only: %i[index activity_stream activity_stream_summary effective_due_dates offline_web_exports start_offline_web_export]
+  skip_before_action :require_user, only: %i[api_settings
+                                             enrollment_invitation
+                                             locks
+                                             permissions
+                                             ping
+                                             preview_html
+                                             public_feed
+                                             self_enrollment
+                                             show]
   before_action :require_user_or_observer, only: [:user_index]
-  before_action :require_context, only: %i[roster locks create_file ping confirm_action copy effective_due_dates offline_web_exports link_validator settings start_offline_web_export statistics user_progress]
+  before_action :require_context, only: %i[
+    confirm_action
+    copy
+    create_file
+    effective_due_dates
+    link_validator
+    locks
+    offline_web_exports
+    ping
+    settings
+    start_offline_web_export
+    statistics
+    user_progress
+  ]
   skip_after_action :update_enrollment_last_activity_at, only: [:enrollment_invitation, :activity_stream_summary]
   before_action :check_limited_access_for_students, only: %i[create_file]
 
@@ -1091,7 +1112,7 @@ class CoursesController < ApplicationController
     get_context
     if authorized_action(@context, @current_user, :read_roster)
       proxy = @context.students_visible_to(@current_user).order_by_sortable_name
-      user_json_preloads(proxy, false)
+      user_json_preloads(proxy)
       render json: proxy.map { |u| user_json(u, @current_user, session) }
     end
   end
@@ -1216,9 +1237,22 @@ class CoursesController < ApplicationController
         # known case in the wild, each student had thousands of deleted
         # group memberships. Since we only care about active group
         # memberships for this course, load the data in a more targeted way.
-        user_json_preloads(users, includes.include?("email"))
+        user_json_preloads(users, preload_email: includes.include?("email"), profile: @domain_root_account&.enable_profiles?)
+        SisPseudonym.preload_enrollment_data(@context, users)
         UserPastLtiId.manual_preload_past_lti_ids(users, @context) if ["uuid", "lti_id"].any? { |id| includes.include? id }
         include_group_ids = includes.delete("group_ids").present?
+        include_diff_tags = can_do(@context, @current_user, :manage_tags_manage)
+        if include_diff_tags
+          user_ids_with_diff_tags = GroupMembership
+                                    .joins(:group)
+                                    .where(user_id: users)
+                                    .merge(Group.non_collaborative)
+                                    .where(groups: { context: @context })
+                                    .where("group_memberships.workflow_state = 'accepted' AND groups.workflow_state <> 'deleted'")
+                                    .distinct
+                                    .pluck(:user_id)
+                                    .to_set
+        end
 
         unless includes.include?("test_student") || Array(params[:enrollment_type]).include?("student_view")
           users.reject! do |u|
@@ -1228,7 +1262,7 @@ class CoursesController < ApplicationController
         if includes.include?("enrollments")
           enrollment_scope = @context.enrollments
                                      .where(user_id: users)
-                                     .preload(:course, :scores, :course_section)
+                                     .preload(:course, :user, :role, :scores, :course_section)
                                      .joins(:course_section)
                                      .order("course_sections.name")
 
@@ -1262,7 +1296,7 @@ class CoursesController < ApplicationController
           end
           user_json(u, @current_user, session, includes, @context, enrollments, excludes).tap do |json|
             json[:group_ids] = active_group_memberships(users)[u.id]&.map(&:group_id) || [] if include_group_ids
-            json[:has_non_collaborative_groups] = u.current_differentiation_tags.where(context: @context).count > 0 if can_do(@context, @current_user, :manage_tags_manage)
+            json[:has_non_collaborative_groups] = user_ids_with_diff_tags.include?(u.id) if include_diff_tags
           end
         }
       end
@@ -1303,12 +1337,11 @@ class CoursesController < ApplicationController
     get_context
     if authorized_action(@context, @current_user, :read_roster)
       includes = Array(params[:include])
-      users = api_find_all(@context.users_visible_to(@current_user, {
-                                                       include_inactive: includes.include?("inactive_enrollments")
-                                                     }),
+      users = api_find_all(@context.users_visible_to(@current_user,
+                                                     include_inactive: includes.include?("inactive_enrollments")),
                            [params[:id]])
 
-      user_json_preloads(users, includes.include?("email"))
+      user_json_preloads(users, preload_email: includes.include?("email"))
       user = users.first or raise ActiveRecord::RecordNotFound
       enrollments = user.not_ended_enrollments.where(course_id: @context).preload(:course, :root_account, :sis_pseudonym) if includes.include?("enrollments")
       render json: user_json(user, @current_user, session, includes, @context, enrollments)
@@ -1542,7 +1575,7 @@ class CoursesController < ApplicationController
 
       respond_to do |format|
         format.html do
-          js_env(RECENT_STUDENTS_URL: api_v1_course_recent_students_url(@context))
+          js_env({ RECENT_STUDENTS_URL: api_v1_course_recent_students_url(@context) })
         end
         format.json { render json: @categories }
       end
@@ -1585,7 +1618,7 @@ class CoursesController < ApplicationController
     if authorized_action(@context, @current_user, :read_as_admin)
       load_all_contexts(context: @context)
 
-      @all_roles = Role.custom_roles_and_counts_for_course(@context, @current_user, true)
+      @all_roles = Role.custom_roles_and_counts_for_course(@context, @current_user, include_inactive: true)
 
       @invited_count = @context.invited_count_visible_to(@current_user)
 
@@ -1618,7 +1651,8 @@ class CoursesController < ApplicationController
         add_tool_manually: @context.grants_right?(@current_user, session, :manage_lti_add),
         edit_tool_manually: @context.grants_right?(@current_user, session, :manage_lti_edit),
         delete_tool_manually: @context.grants_right?(@current_user, session, :manage_lti_delete),
-        manage_course_content_edit: @context.grants_right?(@current_user, session, :manage_course_content_edit)
+        manage_course_content_edit: @context.grants_right?(@current_user, session, :manage_course_content_edit),
+        manage_nav_menu_links: @context.grants_right?(@current_user, session, :manage_nav_menu_links)
       }
 
       js_env({
@@ -1667,6 +1701,22 @@ class CoursesController < ApplicationController
           api_url: Services::Ams.api_url
         })
 
+      if @context.account.feature_enabled?(:intelligent_insights_modernisation)
+        remote_env(canvas_course_criteria:
+          {
+            launch_url: Services::CanvasCourseCriteria.launch_url,
+          })
+
+        js_env(
+          {
+            CANVAS_COURSE_CRITERIA: {
+              COURSE_ID: @context.id,
+              ACCOUNT_ID: @context.account.id.to_s
+            }
+          }
+        )
+      end
+
       if Account.site_admin.feature_enabled?(:grading_scheme_updates)
         js_env({ COURSE_DEFAULT_GRADING_SCHEME_ID: @context.grading_standard_id || @context.default_grading_standard&.id })
       end
@@ -1707,6 +1757,9 @@ class CoursesController < ApplicationController
 
   def new_quizzes_selection_update
     @course = api_find(Course, params[:id])
+
+    return unless authorized_action(@course, @current_user, :manage_course_content_edit)
+
     if @course.root_account.feature_enabled?(:newquizzes_on_quiz_page)
       old_settings = @course.settings
       key_exists = old_settings.key?(:engine_selected)
@@ -1916,7 +1969,8 @@ class CoursesController < ApplicationController
     if authorized_action(@context, @current_user, :update)
       @context.tab_configuration = NavMenuLinkTabs.sync_course_links_with_tabs(
         course: @context,
-        tabs: JSON.parse(params[:tabs_json]).compact
+        tabs: JSON.parse(params[:tabs_json]).compact,
+        can_manage_links: @context.grants_right?(@current_user, session, :manage_nav_menu_links)
       )
       @context.save
       respond_to do |format|
@@ -1943,7 +1997,7 @@ class CoursesController < ApplicationController
   def enrollment_invitation
     get_context
 
-    return if check_enrollment(true)
+    return if check_enrollment(ignore_restricted_courses: true)
     return !!redirect_to(course_url(@context.id)) unless @pending_enrollment
 
     if params[:reject]
@@ -2042,7 +2096,7 @@ class CoursesController < ApplicationController
   #   date-restricted courses.
   #
   # Returns boolean (true if parent request should be cancelled).
-  def check_enrollment(ignore_restricted_courses = false)
+  def check_enrollment(ignore_restricted_courses: false)
     return false if @pending_enrollment
 
     if (enrollment = fetch_enrollment)
@@ -2310,9 +2364,9 @@ class CoursesController < ApplicationController
         js_env({ OBSERVER_OPTIONS: {
                  OBSERVED_USERS_LIST: observed_users(@current_user, session, @context.id),
                  CAN_ADD_OBSERVEE: @current_user
-                                    .profile
-                                    .tabs_available(@current_user, root_account: @domain_root_account)
-                                    .any? { |t| t[:id] == UserProfile::TAB_OBSERVEES }
+                                   .profile
+                                   .tabs_available(@current_user, root_account: @domain_root_account)
+                                   .any? { |t| t[:id] == UserProfile::TAB_OBSERVEES }
                } })
 
         if @context_enrollment
@@ -2365,6 +2419,22 @@ class CoursesController < ApplicationController
 
         set_tutorial_js_env
 
+        if @context.account.feature_enabled?(:intelligent_insights_modernisation)
+          remote_env(canvas_course_criteria:
+            {
+              launch_url: Services::CanvasCourseCriteria.launch_url,
+            })
+
+          js_env(
+            {
+              CANVAS_COURSE_CRITERIA: {
+                COURSE_ID: @context.id,
+                ACCOUNT_ID: @context.account.id.to_s
+              }
+            }
+          )
+        end
+
         default_view = @context.default_view || @context.default_home_page
         @course_home_view = "feed" if params[:view] == "feed"
         @course_home_view ||= default_view
@@ -2395,7 +2465,7 @@ class CoursesController < ApplicationController
         end
 
         if @context.show_announcements_on_home_page? && @context.grants_right?(@current_user, session, :read_announcements)
-          js_env(SHOW_ANNOUNCEMENTS: true, ANNOUNCEMENT_LIMIT: @context.home_page_announcement_limit)
+          js_env({ SHOW_ANNOUNCEMENTS: true, ANNOUNCEMENT_LIMIT: @context.home_page_announcement_limit })
         end
 
         return render_course_notification_settings if params[:view] == "notifications"
@@ -2408,7 +2478,7 @@ class CoursesController < ApplicationController
 
             active_tag_conversion_job = @context.progresses.where(tag: DifferentiationTag::DELAYED_JOB_TAG, workflow_state: ["queued", "running"]).first
             if active_tag_conversion_job
-              js_env(ACTIVE_TAG_CONVERSION_JOB: true)
+              js_env({ ACTIVE_TAG_CONVERSION_JOB: true })
             end
           end
         end
@@ -2424,21 +2494,21 @@ class CoursesController < ApplicationController
         when "assignments"
           add_crumb(t("#crumbs.assignments", "Assignments"))
           set_js_assignment_data
-          js_env(SIS_NAME: AssignmentUtil.post_to_sis_friendly_name(@context))
-          js_env(
-            SHOW_SPEED_GRADER_LINK: @current_user.present? && context.allows_speed_grader? && context.grants_any_right?(@current_user, :manage_grades, :view_all_grades),
-            QUIZ_LTI_ENABLED: @context.feature_enabled?(:quizzes_next) &&
-              !@context.root_account.feature_enabled?(:newquizzes_on_quiz_page) &&
-              @context.quiz_lti_tool.present?,
-            # Exposed at top level for consistency with other pages from which the AssignTo modal is accessed
-            # such as assignment index, modules, individual assignment and assignment create/edit pages
-            PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED: @context.feature_enabled?(:peer_review_allocation_and_grading),
-            FLAGS: {
-              newquizzes_on_quiz_page: @context.root_account.feature_enabled?(:newquizzes_on_quiz_page),
-              show_additional_speed_grader_link: Account.site_admin.feature_enabled?(:additional_speedgrader_links),
-            }
-          )
-          js_env(COURSE_HOME: true)
+          js_env({
+                   SIS_NAME: AssignmentUtil.post_to_sis_friendly_name(@context),
+                   SHOW_SPEED_GRADER_LINK: @current_user.present? && context.allows_speed_grader? && context.grants_any_right?(@current_user, :manage_grades, :view_all_grades),
+                   QUIZ_LTI_ENABLED: @context.feature_enabled?(:quizzes_next) &&
+                     !@context.root_account.feature_enabled?(:newquizzes_on_quiz_page) &&
+                     @context.quiz_lti_tool.present?,
+                   # Exposed at top level for consistency with other pages from which the AssignTo modal is accessed
+                   # such as assignment index, modules, individual assignment and assignment create/edit pages
+                   PEER_REVIEW_ALLOCATION_AND_GRADING_ENABLED: @context.feature_enabled?(:peer_review_allocation_and_grading),
+                   FLAGS: {
+                     newquizzes_on_quiz_page: @context.root_account.feature_enabled?(:newquizzes_on_quiz_page),
+                     show_additional_speed_grader_link: Account.site_admin.feature_enabled?(:additional_speedgrader_links),
+                   },
+                   COURSE_HOME: true
+                 })
           @upcoming_assignments = get_upcoming_assignments(@context)
         when "modules"
           add_crumb(t("#crumbs.modules", "Modules"))
@@ -2466,7 +2536,7 @@ class CoursesController < ApplicationController
             @contexts += @user_groups
           end
           web_conferences = @context.web_conferences.active.to_a
-          @current_conferences = web_conferences.select { |c| c.active?(false, false) && c.users.include?(@current_user) }
+          @current_conferences = web_conferences.select { |c| c.active?(allow_check: false) && c.users.include?(@current_user) }
           @scheduled_conferences = web_conferences.select { |c| c.scheduled? && c.users.include?(@current_user) }
           @stream_items = @current_user.try(:cached_recent_stream_items, { contexts: @contexts }) || []
         end
@@ -2531,7 +2601,7 @@ class CoursesController < ApplicationController
                 visible: !@last_web_export.nil?
               },
             }
-            js_env(CONTEXT_MODULES_HEADER_PROPS: context_modules_header_props)
+            js_env({ CONTEXT_MODULES_HEADER_PROPS: context_modules_header_props })
 
             modules_permissions = {
               canAdd: @can_add,
@@ -2546,8 +2616,10 @@ class CoursesController < ApplicationController
 
             modules_observer_info = observer_module_info
 
-            js_env(MODULES_PERMISSIONS: modules_permissions)
-            js_env(MODULES_OBSERVER_INFO: modules_observer_info)
+            js_env({
+                     MODULES_PERMISSIONS: modules_permissions,
+                     MODULES_OBSERVER_INFO: modules_observer_info
+                   })
 
             js_bundle :context_modules_v2
             css_bundle :content_next, :context_modules2, :context_modules_v2
@@ -2558,8 +2630,10 @@ class CoursesController < ApplicationController
               workflow_state: ["queued", "running"]
             )
 
-            js_env(CONTEXT_MODULE_ASSIGNMENT_INFO_URL: context_url(@context, :context_context_modules_assignment_info_url))
-            js_env(CONTEXT_MODULE_ESTIMATED_DURATION_INFO_URL: context_url(@context, :context_context_modules_estimated_duration_info_url))
+            js_env({
+                     CONTEXT_MODULE_ASSIGNMENT_INFO_URL: context_url(@context, :context_context_modules_assignment_info_url),
+                     CONTEXT_MODULE_ESTIMATED_DURATION_INFO_URL: context_url(@context, :context_context_modules_estimated_duration_info_url)
+                   })
 
             js_bundle :context_modules
             css_bundle :content_next, :context_modules2
@@ -2588,27 +2662,27 @@ class CoursesController < ApplicationController
 
           # env variables that apply only to k5 subjects
           grading_standard = @context.grading_standard_or_default
-          js_env(
-            CONTEXT_MODULE_ASSIGNMENT_INFO_URL: context_url(@context, :context_context_modules_assignment_info_url),
-            CONTEXT_MODULE_ESTIMATED_DURATION_INFO_URL: context_url(@context, :context_context_modules_estimated_duration_info_url),
-            PERMISSIONS: {
-              manage: @context.grants_right?(@current_user, session, :manage),
-              manage_groups: @context.grants_any_right?(@current_user,
-                                                        session,
-                                                        *RoleOverride::GRANULAR_MANAGE_GROUPS_PERMISSIONS),
-              read_as_admin: @context.grants_right?(@current_user, session, :read_as_admin),
-              read_announcements: @context.grants_right?(@current_user, session, :read_announcements)
-            },
-            STUDENT_PLANNER_ENABLED: planner_enabled?,
-            TABS: @context.tabs_available(@current_user, course_subject_tabs: true, session:),
-            OBSERVED_USERS_LIST: observed_users(@current_user, session, @context.id),
-            TAB_CONTENT_ONLY: embed_mode,
-            SHOW_IMMERSIVE_READER: show_immersive_reader?,
-            GRADING_SCHEME: grading_standard.data,
-            POINTS_BASED: grading_standard.points_based?,
-            SCALING_FACTOR: grading_standard.scaling_factor,
-            RESTRICT_QUANTITATIVE_DATA: @context.restrict_quantitative_data?(@current_user)
-          )
+          js_env({
+                   CONTEXT_MODULE_ASSIGNMENT_INFO_URL: context_url(@context, :context_context_modules_assignment_info_url),
+                   CONTEXT_MODULE_ESTIMATED_DURATION_INFO_URL: context_url(@context, :context_context_modules_estimated_duration_info_url),
+                   PERMISSIONS: {
+                     manage: @context.grants_right?(@current_user, session, :manage),
+                     manage_groups: @context.grants_any_right?(@current_user,
+                                                               session,
+                                                               *RoleOverride::GRANULAR_MANAGE_GROUPS_PERMISSIONS),
+                     read_as_admin: @context.grants_right?(@current_user, session, :read_as_admin),
+                     read_announcements: @context.grants_right?(@current_user, session, :read_announcements)
+                   },
+                   STUDENT_PLANNER_ENABLED: planner_enabled?,
+                   TABS: @context.tabs_available(@current_user, course_subject_tabs: true, session:),
+                   OBSERVED_USERS_LIST: observed_users(@current_user, session, @context.id),
+                   TAB_CONTENT_ONLY: embed_mode,
+                   SHOW_IMMERSIVE_READER: show_immersive_reader?,
+                   GRADING_SCHEME: grading_standard.data,
+                   POINTS_BASED: grading_standard.points_based?,
+                   SCALING_FACTOR: grading_standard.scaling_factor,
+                   RESTRICT_QUANTITATIVE_DATA: @context.restrict_quantitative_data?(@current_user)
+                 })
 
           self_enrollment_option = visible_self_enrollment_option
           self_enrollment_url = enroll_url(@context.self_enrollment_code) if self_enrollment_option == :enroll
@@ -2641,7 +2715,7 @@ class CoursesController < ApplicationController
                                         }
                                       })
 
-          js_env({ COURSE: course_env_variables }, true)
+          js_env({ COURSE: course_env_variables }, overwrite: true)
           js_bundle :k5_course, :context_modules
           css_bundle :k5_common, :k5_course, :content_next, :context_modules2, :grade_summary
         when "announcements"
@@ -2676,13 +2750,13 @@ class CoursesController < ApplicationController
 
   def render_course_notification_settings
     add_crumb(t("Course Notification Settings"))
-    js_env(
-      course_name: @context.name,
-      NOTIFICATION_PREFERENCES_OPTIONS: {
-        allowed_push_categories: Notification.categories_to_send_in_push,
-        send_scores_in_emails_text: Notification.where(category: "Grading").first&.related_user_setting(@current_user, @domain_root_account)
-      }
-    )
+    js_env({
+             course_name: @context.name,
+             NOTIFICATION_PREFERENCES_OPTIONS: {
+               allowed_push_categories: Notification.categories_to_send_in_push,
+               send_scores_in_emails_text: Notification.where(category: "Grading").first&.related_user_setting(@current_user, @domain_root_account)
+             }
+           })
     js_bundle :course_notification_settings
     render html: "", layout: true
   end
@@ -2884,17 +2958,19 @@ class CoursesController < ApplicationController
 
     # For warnings messages previous to export
     warnings = @context.export_warnings
-    js_env(EXPORT_WARNINGS: warnings) unless warnings.empty?
+    js_env({ EXPORT_WARNINGS: warnings }) unless warnings.empty?
 
     # For prepopulating the date fields
-    js_env(OLD_START_DATE: datetime_string(@context.start_at, :verbose))
-    js_env(OLD_END_DATE: datetime_string(@context.conclude_at, :verbose))
-    js_env(QUIZZES_NEXT_ENABLED: new_quizzes_enabled?)
-    js_env(NEW_QUIZZES_IMPORT: new_quizzes_import_enabled?)
-    js_env(NEW_QUIZZES_MIGRATION: new_quizzes_migration_enabled?)
-    js_env(NEW_QUIZZES_MIGRATION_DEFAULT: new_quizzes_migration_default)
-    js_env(NEW_QUIZZES_MIGRATION_REQUIRED: new_quizzes_require_migration?)
-    js_env(NEW_QUIZZES_UNATTACHED_BANK_MIGRATIONS: new_quizzes_unattached_bank_migrations_enabled?)
+    js_env({
+             OLD_START_DATE: datetime_string(@context.start_at, :verbose),
+             OLD_END_DATE: datetime_string(@context.conclude_at, :verbose),
+             QUIZZES_NEXT_ENABLED: new_quizzes_enabled?,
+             NEW_QUIZZES_IMPORT: new_quizzes_import_enabled?,
+             NEW_QUIZZES_MIGRATION: new_quizzes_migration_enabled?,
+             NEW_QUIZZES_MIGRATION_DEFAULT: new_quizzes_migration_default,
+             NEW_QUIZZES_MIGRATION_REQUIRED: new_quizzes_require_migration?,
+             NEW_QUIZZES_UNATTACHED_BANK_MIGRATIONS: new_quizzes_unattached_bank_migrations_enabled?
+           })
   end
 
   def copy_course
@@ -3754,10 +3830,10 @@ class CoursesController < ApplicationController
   end
 
   def publish_to_sis
-    sis_publish_status(true)
+    sis_publish_status(publish_grades: true)
   end
 
-  def sis_publish_status(publish_grades = false)
+  def sis_publish_status(publish_grades: false)
     get_context
     return unless authorized_action(@context, @current_user, :manage_grades)
 
@@ -4087,7 +4163,7 @@ class CoursesController < ApplicationController
 
     return unless authorized_action(@context, @current_user, RoleOverride::GRANULAR_MANAGE_COURSE_CONTENT_PERMISSIONS)
 
-    js_env(COURSE_ID: @context.id)
+    js_env({ COURSE_ID: @context.id })
     js_bundle :youtube_migration
 
     render html: "", layout: true
@@ -4257,10 +4333,13 @@ class CoursesController < ApplicationController
     include_observed = params.fetch(:include, []).include?("observed_users")
 
     if params[:state]
-      states = Array(params[:state])
-      states += %w[created claimed] if states.include?("unpublished")
+      states = Array.wrap(params[:state])
+      states = states.flat_map { |s| Course::API_STATE_EXPANSIONS[s] || s }.uniq
       conditions = states.filter_map do |state|
-        Enrollment::QueryBuilder.new(nil, course_workflow_state: state, enforce_course_workflow_state: true).conditions
+        # Disable strict checks for unpublished courses so student/observer
+        # invited enrollments are included, matching the web UI behavior.
+        strict = !Course::UNPUBLISHED_STATES.include?(state)
+        Enrollment::QueryBuilder.new(nil, course_workflow_state: state, enforce_course_workflow_state: true, strict_checks: strict).conditions
       end.join(" OR ")
       enrollments = user.enrollments.eager_load(:course).where(conditions).shard(user.in_region_associated_shards)
 
@@ -4290,6 +4369,14 @@ class CoursesController < ApplicationController
       end
 
       enrollments = enrollments.to_a
+
+      # Honor restrict_student_future_listing account setting, matching the
+      # web UI's load_enrollments_for_index behavior.
+      if states.intersect?(Course::UNPUBLISHED_STATES)
+        ActiveRecord::Associations.preload(enrollments, :enrollment_state)
+        ActiveRecord::Associations.preload(enrollments.map(&:course).uniq, :account)
+        enrollments.reject!(&:restrict_future_listing?)
+      end
     elsif params[:enrollment_state] == "active"
       enrollments = user.participating_enrollments
       ActiveRecord::Associations.preload(enrollments, :course)

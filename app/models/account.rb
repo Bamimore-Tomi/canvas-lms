@@ -155,7 +155,7 @@ class Account < ActiveRecord::Base
   belongs_to :course_template, class_name: "Course", inverse_of: :templated_accounts
   belongs_to :grading_standard
 
-  def inherited_assessment_question_banks(include_self = false, *additional_contexts)
+  def inherited_assessment_question_banks(*additional_contexts, include_self: false)
     sql, conds = [], []
     contexts = additional_contexts + account_chain
     contexts.delete(self) unless include_self
@@ -461,6 +461,7 @@ class Account < ActiveRecord::Base
   add_setting :thousand_separator, inheritable: true
   add_setting :early_access_program, boolean: true, default: false, root_only: true, inheritable: true
   add_setting :discovery_page, root_only: true
+  add_setting :onetrust_consent_domain_id, root_only: true
 
   def settings=(hash)
     if hash.is_a?(Hash) || hash.is_a?(ActionController::Parameters)
@@ -862,7 +863,7 @@ class Account < ActiveRecord::Base
         (preloaded_accounts[account.parent_account_id] ||= []) << account
       end
     end
-    res = [[("&nbsp;&nbsp;" * indent).html_safe + name, id]]
+    res = [[("&nbsp;&nbsp;".html_safe * indent) + name, id]]
     preloaded_accounts[id]&.each do |account|
       res += account.sub_accounts_as_options(indent + 1, preloaded_accounts)
     end
@@ -998,7 +999,7 @@ class Account < ActiveRecord::Base
           # Prevent subsequent code using a stale Account object whose cached associations
           # or inherited settings were just invalidated.
           reload_if_cache_stale
-          Account.delay_if_production(singleton: "Account.invalidate_inherited_caches_#{global_id}")
+          Account.delay(singleton: "Account.invalidate_inherited_caches_#{global_id}")
                  .invalidate_inherited_caches(self, @invalidations)
         end
       end
@@ -1180,7 +1181,8 @@ class Account < ActiveRecord::Base
         end
 
         if starting_account_id
-          GuardRail.activate(:secondary) do
+          guard_rail_env = (Account.connection.open_transactions == 0) ? :secondary : GuardRail.environment
+          GuardRail.activate(guard_rail_env) do
             ids = Account.connection.select_values(<<~SQL.squish)
               WITH RECURSIVE t AS (
                 SELECT * FROM #{Account.quoted_table_name} WHERE id=#{Shard.local_id_for(starting_account_id).first}
@@ -1324,9 +1326,7 @@ class Account < ActiveRecord::Base
     Account.limit(limit).offset(offset).sub_accounts_recursive(id)
   end
 
-  def self.sub_accounts_recursive(parent_account_id, pluck = false)
-    raise ArgumentError unless [false, :pluck].include?(pluck)
-
+  def self.sub_accounts_recursive(parent_account_id, pluck: false)
     original_shard = Shard.current
     result = Shard.shard_for(parent_account_id).activate do
       parent_account_id = Shard.relative_id_for(parent_account_id, original_shard, Shard.current)
@@ -1384,7 +1384,7 @@ class Account < ActiveRecord::Base
 
   # a common helper
   def self.sub_account_ids_recursive(parent_account_id)
-    active.select(:id).sub_accounts_recursive(parent_account_id, :pluck)
+    active.select(:id).sub_accounts_recursive(parent_account_id, pluck: true)
   end
 
   # compat for reports
@@ -1469,12 +1469,12 @@ class Account < ActiveRecord::Base
     account_users.active.where(user_id: user).first if user
   end
 
-  def available_custom_account_roles(include_inactive = false)
-    available_custom_roles(include_inactive).for_accounts.to_a
+  def available_custom_account_roles(include_inactive: false)
+    available_custom_roles(include_inactive:).for_accounts.to_a
   end
 
-  def available_account_roles(include_inactive = false, user = nil)
-    account_roles = available_custom_account_roles(include_inactive)
+  def available_account_roles(include_inactive: false, user: nil)
+    account_roles = available_custom_account_roles(include_inactive:)
     account_roles << Role.get_built_in_role("AccountAdmin", root_account_id: resolved_root_account_id)
     if user
       account_roles.select! do |role|
@@ -1489,8 +1489,8 @@ class Account < ActiveRecord::Base
   # returns active roles first, then ordered by their place in the account chain.
   # this provides determinism when multiple roles with the same name exist
   # in the account chain - just pick the first matching one you find
-  def available_custom_course_roles(include_inactive = false)
-    roles = available_custom_roles(include_inactive).for_courses.to_a
+  def available_custom_course_roles(include_inactive: false)
+    roles = available_custom_roles(include_inactive:).for_courses.to_a
 
     shard.activate do
       account_positions = account_chain_ids(include_federated_parent_id: true).each_with_index.to_h
@@ -1501,13 +1501,13 @@ class Account < ActiveRecord::Base
     end
   end
 
-  def available_course_roles(include_inactive = false)
-    course_roles = available_custom_course_roles(include_inactive)
+  def available_course_roles(include_inactive: false)
+    course_roles = available_custom_course_roles(include_inactive:)
     course_roles += Role.built_in_course_roles(root_account_id: resolved_root_account_id)
     course_roles
   end
 
-  def available_custom_roles(include_inactive = false)
+  def available_custom_roles(include_inactive: false)
     scope = if root_account.primary_settings_root_account?
               Role.where(account_id: account_chain_ids)
             else
@@ -1516,8 +1516,8 @@ class Account < ActiveRecord::Base
     include_inactive ? scope.not_deleted : scope.active
   end
 
-  def available_roles(include_inactive = false)
-    available_account_roles(include_inactive) + available_course_roles(include_inactive)
+  def available_roles(include_inactive: false)
+    available_account_roles(include_inactive:) + available_course_roles(include_inactive:)
   end
 
   def get_account_role_by_name(role_name)
@@ -1867,6 +1867,37 @@ class Account < ActiveRecord::Base
     settings.dig(:discovery_page, :active) == true
   end
 
+  def discovery_page_allowed?
+    false
+  end
+
+  def discovery_page_url
+    nil
+  end
+
+  def discovery_page_claims_for(user, config)
+    providers = authentication_providers.active.load
+    build_links = lambda do |entries|
+      (entries || []).filter_map do |entry|
+        provider = providers.find { |p| p.id == entry[:authentication_provider_id].to_i }
+        next if provider.nil?
+
+        discovery_page_link_for(provider, entry)
+      end
+    end
+
+    {
+      sub: user.global_id.to_s,
+      org: uuid,
+      primary: build_links.call(config[:primary]),
+      secondary: build_links.call(config[:secondary])
+    }
+  end
+
+  def discovery_page_link_for(provider, entry)
+    { label: entry[:label], icon: entry[:icon], path: provider.login_authentication_provider_path }.compact
+  end
+
   def validate_auth_discovery_url
     return if settings[:auth_discovery_url].blank?
 
@@ -1958,16 +1989,16 @@ class Account < ActiveRecord::Base
       @special_account_list ||= []
     end
 
-    def clear_special_account_cache!(force = false)
-      special_account_timed_cache.clear(force)
+    def clear_special_account_cache!(force: false)
+      special_account_timed_cache.clear(force:)
     end
 
     def define_special_account(key, name = nil)
       name ||= key.to_s.titleize
       special_account_list << key
       instance_eval <<~RUBY, __FILE__, __LINE__ + 1
-        def self.#{key}(force_create = false)
-          get_special_account(:#{key}, #{name.inspect}, force_create)
+        def self.#{key}(force_create: false)
+          get_special_account(:#{key}, #{name.inspect}, force_create:)
         end
       RUBY
     end
@@ -1981,7 +2012,7 @@ class Account < ActiveRecord::Base
 
   def clear_special_account_cache_if_special
     if shard == Shard.birth && Account.special_account_ids.values.map(&:to_i).include?(id)
-      Account.clear_special_account_cache!(true)
+      Account.clear_special_account_cache!(force: true)
     end
   end
 
@@ -2009,7 +2040,7 @@ class Account < ActiveRecord::Base
     end
   end
 
-  def self.get_special_account(special_account_type, default_account_name, force_create = false)
+  def self.get_special_account(special_account_type, default_account_name, force_create: false)
     Shard.birth.activate do
       account = special_accounts[special_account_type]
       unless account
@@ -2265,7 +2296,7 @@ class Account < ActiveRecord::Base
       tabs << { id: TAB_DEVELOPER_KEYS, label: t("#account.tab_developer_keys", "Developer Keys"), css_class: "developer_keys", href: :account_developer_keys_path, account_id: root_account.id }
     end
 
-    if user && grants_right?(user, :view_analytics_hub)
+    if !root_account.site_admin? && user && grants_right?(user, :view_analytics_hub)
       tabs << { id: TAB_ANALYTICS_HUB, label: t("#account.tab_analytics_hub", "Analytics Hub"), css_class: "analytics_hub", href: :account_analytics_hub_path }
     end
 
@@ -2279,6 +2310,7 @@ class Account < ActiveRecord::Base
 
     tabs += external_tool_tabs(opts, user)
     tabs += Lti::MessageHandler.lti_apps_tabs(self, [Lti::ResourcePlacement::ACCOUNT_NAVIGATION], opts)
+    tabs += NavMenuLinkTabs.account_tabs(self) if root_account.feature_enabled?(:nav_menu_links)
     Lti::ResourcePlacement.update_tabs_and_return_item_banks_tab(tabs)
 
     if feature_enabled?(:new_quizzes_native_experience)
@@ -2574,7 +2606,7 @@ class Account < ActiveRecord::Base
     work = lambda do
       default_enrollment_term
       enable_canvas_authentication
-      TermsOfService.ensure_terms_for_account(self, true) if root_account? && !TermsOfService.skip_automatic_terms_creation
+      TermsOfService.ensure_terms_for_account(self, is_new_account: true) if root_account? && !TermsOfService.skip_automatic_terms_creation
       create_built_in_roles if root_account?
     end
     return work.call if Rails.env.test?
@@ -2745,7 +2777,7 @@ class Account < ActiveRecord::Base
   def roles_with_enabled_permission(permission)
     roles = available_roles
     roles.select do |role|
-      RoleOverride.permission_for(self, permission, role, self, true)[:enabled]
+      RoleOverride.permission_for(self, permission, role, self, caching: false)[:enabled]
     end
   end
 
@@ -2891,6 +2923,12 @@ class Account < ActiveRecord::Base
     sub_accounts.where(grading_standard: nil).find_each do |sub_account|
       sub_account.recompute_assignments_using_account_default(grading_standard_id, grading_standard)
     end
+  end
+
+  def horizon_block_content_editor?
+    horizon_account? &&
+      root_account.feature_enabled?(:horizon_block_content_editor) &&
+      ContentServiceClient.enabled?
   end
 
   def horizon_account_locked?

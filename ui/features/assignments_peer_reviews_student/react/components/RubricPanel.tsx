@@ -16,12 +16,15 @@
  * with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import React from 'react'
+import React, {useRef, useEffect} from 'react'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import {Flex} from '@instructure/ui-flex'
 import {Heading} from '@instructure/ui-heading'
 import {CloseButton} from '@instructure/ui-buttons'
-import {RubricAssessmentContainerWrapper} from '@canvas/rubrics/react/RubricAssessment'
+import {
+  RubricAssessmentContainerWrapper,
+  RubricAssessmentTray,
+} from '@canvas/rubrics/react/RubricAssessment'
 import type {RubricAssessmentData} from '@canvas/rubrics/react/types/rubric'
 import type {ViewMode} from '@canvas/rubrics/react/RubricAssessment/ViewModeSelect'
 import type {
@@ -42,6 +45,8 @@ interface RubricPanelProps {
   onSubmit: (assessment: RubricAssessmentData[]) => void
   onViewModeChange: (mode: ViewMode) => void
   isReadOnly?: boolean
+  autoFocusCloseButton?: boolean
+  isMobile?: boolean
 }
 
 export const RubricPanel: React.FC<RubricPanelProps> = ({
@@ -54,9 +59,61 @@ export const RubricPanel: React.FC<RubricPanelProps> = ({
   onSubmit,
   onViewModeChange,
   isReadOnly = false,
+  autoFocusCloseButton = false,
+  isMobile = false,
 }) => {
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
+
+  useEffect(() => {
+    if (autoFocusCloseButton) {
+      closeButtonRef.current?.focus()
+    }
+  }, [autoFocusCloseButton])
+
   if (!assignment.rubric) {
     return null
+  }
+
+  const mappedCriteria = assignment.rubric.criteria.map((criterion: RubricCriterion) => ({
+    id: criterion._id,
+    description: criterion.description,
+    longDescription: criterion.long_description ?? '',
+    points: criterion.points,
+    criterionUseRange: criterion.criterion_use_range ?? false,
+    learningOutcomeId: criterion.learning_outcome_id ?? undefined,
+    ignoreForScoring: criterion.ignore_for_scoring ?? false,
+    masteryPoints: criterion.mastery_points ?? undefined,
+    ratings: criterion.ratings.map((rating: RubricRating) => ({
+      id: rating._id,
+      description: rating.description,
+      longDescription: rating.long_description ?? '',
+      points: rating.points,
+      criterionId: criterion._id,
+    })),
+  }))
+
+  if (isMobile) {
+    return (
+      <RubricAssessmentTray
+        isOpen={true}
+        currentUserId={ENV.current_user_id?.toString() ?? ''}
+        hidePoints={assignment.rubricAssociation?.hide_points ?? false}
+        isPreviewMode={isPeerReviewCompleted || rubricAssessmentCompleted || isReadOnly}
+        isPeerReview={true}
+        rubric={{
+          title: assignment.rubric.title,
+          criteria: mappedCriteria,
+          ratingOrder: assignment.rubric.ratingOrder ?? 'descending',
+          freeFormCriterionComments: assignment.rubric.free_form_criterion_comments ?? false,
+          pointsPossible: assignment.rubric.points_possible,
+          buttonDisplay: assignment.rubric.button_display ?? 'level',
+        }}
+        rubricAssessmentData={rubricAssessmentData}
+        viewModeOverride={rubricViewMode}
+        onDismiss={onClose}
+        onSubmit={onSubmit}
+      />
+    )
   }
 
   return (
@@ -67,6 +124,7 @@ export const RubricPanel: React.FC<RubricPanelProps> = ({
       height="100%"
       padding="small"
       overflowY="auto"
+      id="rubric-panel"
     >
       <Flex as="div" direction="column" justifyItems="space-between" height="100%">
         <Flex.Item>
@@ -76,8 +134,11 @@ export const RubricPanel: React.FC<RubricPanelProps> = ({
                 {I18n.t('Peer Review Rubric')}
               </Heading>
             </Flex.Item>
-            <Flex.Item>
+            <Flex.Item padding="xx-small">
               <CloseButton
+                elementRef={(el: Element | null) => {
+                  closeButtonRef.current = el as HTMLButtonElement
+                }}
                 screenReaderLabel={I18n.t('Close Rubric')}
                 size="small"
                 onClick={onClose}
@@ -88,24 +149,9 @@ export const RubricPanel: React.FC<RubricPanelProps> = ({
         </Flex.Item>
         <Flex.Item>
           <RubricAssessmentContainerWrapper
+            isStandaloneContainer={true}
             buttonDisplay={assignment.rubric.button_display ?? 'level'}
-            criteria={assignment.rubric.criteria.map((criterion: RubricCriterion) => ({
-              id: criterion._id,
-              description: criterion.description,
-              longDescription: criterion.long_description ?? '',
-              points: criterion.points,
-              criterionUseRange: criterion.criterion_use_range ?? false,
-              learningOutcomeId: criterion.learning_outcome_id ?? undefined,
-              ignoreForScoring: criterion.ignore_for_scoring ?? false,
-              masteryPoints: criterion.mastery_points ?? undefined,
-              ratings: criterion.ratings.map((rating: RubricRating) => ({
-                id: rating._id,
-                description: rating.description,
-                longDescription: rating.long_description ?? '',
-                points: rating.points,
-                criterionId: criterion._id,
-              })),
-            }))}
+            criteria={mappedCriteria}
             currentUserId={ENV.current_user_id?.toString() ?? ''}
             hidePoints={assignment.rubricAssociation?.hide_points ?? false}
             isPreviewMode={isPeerReviewCompleted || rubricAssessmentCompleted || isReadOnly}

@@ -279,7 +279,7 @@ class AccessToken < ActiveRecord::Base
       # not only use optimistic locking, but also don't update if someone else
       # is already in the process of updating it
       updated = AccessToken.where(id: AccessToken.where(id: self, last_used_at: prior_last_used_at)
-                                                 .lock("FOR UPDATE SKIP LOCKED"))
+                                      .lock("FOR UPDATE SKIP LOCKED"))
                            .update_all(last_used_at: at, updated_at: at)
       changes_applied if updated == 1
     end
@@ -307,7 +307,7 @@ class AccessToken < ActiveRecord::Base
     @full_token = nil
   end
 
-  def generate_token(overwrite = false)
+  def generate_token(overwrite: false)
     if overwrite || !crypted_token
       self.token = CanvasSlug.generate(nil, TOKEN_SIZE)
 
@@ -331,7 +331,7 @@ class AccessToken < ActiveRecord::Base
   end
 
   def regenerate_access_token
-    generate_token(true)
+    generate_token(overwrite: true)
     save
   end
 

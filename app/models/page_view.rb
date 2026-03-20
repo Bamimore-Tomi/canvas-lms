@@ -140,18 +140,14 @@ class PageView < ActiveRecord::Base
     end
   end
 
-  def self.from_attributes(attrs, new_record = false)
-    @blank_template ||= columns.each_with_object({}) do |c, h|
-      h[c.name] = nil
+  def self.from_attributes(attrs)
+    @blank_template ||= columns.to_h do |c|
+      [c.name, nil]
     end
     attrs = attrs.slice(*@blank_template.keys)
     shard = PageView.global_storage_namespace? ? Shard.birth : Shard.current
     shard.activate do
-      if new_record
-        new { |pv| pv.assign_attributes(attrs) }
-      else
-        instantiate(@blank_template.merge(attrs))
-      end
+      instantiate(@blank_template.merge(attrs))
     end
   end
 
@@ -204,7 +200,7 @@ class PageView < ActiveRecord::Base
     ConfigFile.cache_object("pv4") do |config|
       creds = Rails.application.credentials.pv4_creds
 
-      Pv4Client.new(config["uri"], creds&.dig(Rails.env.to_sym, :access_token))
+      Pv4Client.new(config["uri"], creds&.dig(Rails.env.to_sym, :access_token), **)
     end
   end
 
@@ -212,10 +208,10 @@ class PageView < ActiveRecord::Base
   # basically, it responds to #paginate and returns a
   # WillPaginate::Collection-like object
   def self.for_user(user, options = {})
-    client = options.delete(:client) || pv4_client
     viewer = options.delete(:viewer)
     viewer = nil if viewer == user
     viewer = nil if viewer && Account.site_admin.grants_any_right?(viewer, :view_statistics, :manage_students)
+    client = options.delete(:client) || pv4_client(requestor_user: viewer || user)
     user.shard.activate do
       if PageView.pv4?
         result = client.for_user(user, **options)

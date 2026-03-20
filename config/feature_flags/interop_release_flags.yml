@@ -9,20 +9,6 @@ ags_improved_course_concluded_response_codes:
     along with a helpful message indicating that the tool cannot access concluded
     courses.
   applies_to: RootAccount
-ags_score_trigger_needs_grading_after_submitted:
-  state: hidden
-  shadow: true
-  display_name: Prevents LTI AGS Score publish service incorrectly trigger Needs Grading icon
-  description: |-
-    If enabled, the AGS Score publish service endpoint will not trigger showing the Needs Grading icon in the gradebook
-    when activityProgress is Initialized or Started or InProgress just when it is Submitted or Completed.
-    If disabled only Initialized activityProgress will not trigger showing the Needs Grading icon in the gradebook.
-  applies_to: RootAccount
-  environments:
-    development:
-      state: allowed_on
-    ci:
-      state: allowed_on
 ags_improved_course_concluded_check:
   state: hidden
   shadow: true
@@ -116,18 +102,6 @@ disable_oembed_retrieve:
     This is to ease transitioning any potential users off this endpoint before
     removing it altogether.
   shadow: true
-disallow_null_custom_variables:
-  state: hidden
-  applies_to: SiteAdmin
-  display_name: Disallow all null values for custom variables
-  description: |-
-    When enabled, any custom variables that have previously been returning NULL
-    will now return the name of the custom variable.
-  environments:
-    development:
-      state: allowed_on
-    ci:
-      state: allowed_on
 exclude_deleted_lti2_tools_on_assignment_export:
   state: hidden
   applies_to: SiteAdmin
@@ -172,6 +146,17 @@ import_numeric_lti_custom_params_as_string:
     development:
       state: allowed_on
     test:
+      state: allowed_on
+    ci:
+      state: allowed_on
+lock_lti_registrations:
+  state: hidden
+  shadow: true
+  applies_to: RootAccount
+  display_name: Lock LTI Registrations
+  description: When enabled, admins can lock registrations to prevent deployment via client ID or course copy.
+  environments:
+    development:
       state: allowed_on
     ci:
       state: allowed_on
@@ -297,26 +282,6 @@ lti_before_assignment_results:
     and can view the assignment. This can be used to make the placement more prominent for tools that require action after an assignment
     has been submitted.
   applies_to: RootAccount
-lti_cache_tool_public_jwks_url:
-  state: hidden
-  shadow: true
-  applies_to: RootAccount
-  display_name: "Cache LTI 1.3 tools' JWKs URL"
-  description: |-
-    If enabled, the public_jwk_url for LTI 1.3 tools will be cached
-    for a short amount of time during deep linking flows. If disabled,
-    the JWKs will be fetched on every request to deep_linking_response.
-  environments:
-    development:
-      state: allowed_on
-    test:
-      state: allowed_on
-    ci:
-      state: allowed_on
-    beta:
-      state: allowed_on
-    production:
-      state: allowed_on
 lti_context_copy_notice:
   state: hidden
   shadow: true
@@ -326,18 +291,6 @@ lti_context_copy_notice:
     Send a Platform Notice to LTI 1.3 tools that have subscribed
     to the LtiContextCopyNotice notice type when course copies or other content imports happen.
     Replaces the need for using the 1.1 Content Migration tool configuration.
-  environments:
-    development:
-      state: allowed_on
-    ci:
-      state: allowed_on
-lti_deployment_id_in_login_request:
-  state: hidden
-  applies_to: RootAccount
-  display_name: Send lti_deployment_id in the LTI login request
-  description: |-
-    When enabled the lti_deployment_id will be sent in the LTI 1.3 login request.
-    When disabled both deployment_id and lti_deployment_id will be sent.
   environments:
     development:
       state: allowed_on
@@ -373,22 +326,6 @@ lti_link_to_apps_from_developer_keys:
     for Canvas API calls via the OAuth flow.
   environments:
     development:
-      state: allowed_on
-    ci:
-      state: allowed_on
-lti_oidc_missing_cookie_retry:
-  state: hidden
-  shadow: true
-  applies_to: RootAccount
-  display_name: Retry LTI OIDC launches that fail due to missing cookies
-  description: |-
-    If enabled, Canvas will retry LTI OIDC launches that fail due to missing cookies.
-    Safari tracking protection sometimes blocks cookies from being set to authorize the endpoint.
-    To fix this, we resubmit the request with a form.
-  environments:
-    development:
-      state: allowed_on
-    test:
       state: allowed_on
     ci:
       state: allowed_on
@@ -524,37 +461,6 @@ lti_usage_premium:
   description: >-
     This flag controls if an instance has access to premium LTI usage features.
     It should only be enabled in schools which have a contract paying for these features.
-lti_v2_turnitin_usage_log:
-  state: hidden
-  shadow: true
-  applies_to: RootAccount
-  display_name: "Send Turnitin LTI V2 usage logs to Pandata"
-  description: >-
-    If enabled, we'll send usage data about Turnitin LTI V2 launches to Pandata the same way
-    as we send usage data about LTI 1.3 launches.
-  environments:
-    development:
-      state: allowed_on
-    test:
-      state: allowed_on
-    ci:
-      state: allowed_on
-lti_variable_expansions_use_group_course_as_course:
-  state: hidden
-  shadow: true
-  applies_to: RootAccount
-  display_name: "LTI Variable Expansions: Use Group's Course as Course"
-  description: >-
-    If enabled, if an LTI tool is launched in the context of Course-based Group (Group within a Course), Course-related LTI variable expansions will use
-    the Group's Course as the Course. If disabled, legacy behavior will apply -- Course-related LTI variable expansions will only apply when the Course
-    is the direct context of the launch.
-  environments:
-    development:
-      state: allowed_on
-    test:
-      state: allowed_on
-    ci:
-      state: allowed_on
 microsoft_group_enrollments_syncing:
   state: hidden
   display_name: Microsoft Group enrollment syncing
@@ -584,18 +490,6 @@ nav_menu_links:
   description: |-
     Enables the creation of links at the account navigation, user navigation, and course navigation level.
     This is a replacement of the Redirect Tool functionality.
-  environments:
-    development:
-      state: allowed_on
-    ci:
-      state: allowed_on
-open_tools_in_new_tab:
-  state: hidden
-  shadow: true
-  applies_to: RootAccount
-  display_name: "Open LTI tools in a new tab"
-  description: >-
-    If enabled, the tool launch will open a new tab and will default to the 'borderless' display type showing no Canvas UI elements.
   environments:
     development:
       state: allowed_on

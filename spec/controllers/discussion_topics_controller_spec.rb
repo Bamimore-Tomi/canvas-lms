@@ -151,7 +151,7 @@ describe DiscussionTopicsController do
         expect(assigns["topics"]).to include(@child_topic)
       end
 
-      it "assigns the create permission if the term is concluded and course is open" do
+      it "does not assign the create permission if the term is concluded, even when course dates are open" do
         @course.update_attribute(:restrict_enrollments_to_course_dates, true)
         term = @course.account.enrollment_terms.create!(name: "mew", end_at: Time.now.utc - 1.minute)
         @course.enrollment_term = term
@@ -161,7 +161,7 @@ describe DiscussionTopicsController do
 
         get "index", params: { course_id: @course.id }
 
-        expect(assigns[:js_env][:permissions][:create]).to be_truthy
+        expect(assigns[:js_env][:permissions][:create]).to be_falsy
       end
 
       it "does not assign the create permission if the term and course are concluded" do
@@ -930,7 +930,7 @@ describe DiscussionTopicsController do
         message: "some message"
       )
       get "show", params: { course_id: @course.id, id: @announcement.id }
-      expect(response).to_not be_successful
+      expect(response).not_to be_successful
     end
 
     it "does not display announcements in private courses to users who aren't logged in" do
@@ -1099,6 +1099,18 @@ describe DiscussionTopicsController do
         subject
         expect(response.body).to match(/.+enrollment.+\.atom/)
         expect(response.body).to include("Discussion Atom Feed")
+      end
+
+      context "embed param" do
+        it "adds mobile-embed body class when embed=true" do
+          get "show", params: { course_id: course.id, id: discussion.id, embed: "true" }
+          expect(assigns(:body_classes)).to include("mobile-embed")
+        end
+
+        it "does not add mobile-embed body class without embed param" do
+          subject
+          expect(assigns(:body_classes)).not_to include("mobile-embed")
+        end
       end
     end
 
@@ -1547,6 +1559,25 @@ describe DiscussionTopicsController do
             expect(assigns[:js_env][:COURSE_ID]).to be_nil
           end
         end
+
+        context "when context is a group, not a course" do
+          before do
+            @group1.add_user(@teacher)
+            @group_topic = @group1.discussion_topics.create!(title: "group topic")
+            user_session(@teacher)
+          end
+
+          it "sets enhanced_rubrics_enabled to false" do
+            get "show", params: { group_id: @group1.id, id: @group_topic.id }
+            expect(assigns[:js_env][:enhanced_rubrics_enabled]).to be(false)
+          end
+
+          it "does not set enhanced rubrics assignment env variables" do
+            get "show", params: { group_id: @group1.id, id: @group_topic.id }
+            expect(assigns[:js_env][:ASSIGNMENT_ID]).to be_nil
+            expect(assigns[:js_env][:COURSE_ID]).to be_nil
+          end
+        end
       end
 
       it "assigns groups from the topic's category" do
@@ -1665,7 +1696,7 @@ describe DiscussionTopicsController do
         mod.save!
         expect(@topic.read_state(@student)).to eq "unread"
         get "index", params: { course_id: @course.id, exclude_context_module_locked_topics: true }, format: "json"
-        expect(response.parsed_body.pluck("id")).to_not include @topic.id
+        expect(response.parsed_body.pluck("id")).not_to include @topic.id
       end
 
       it "sets ASSET_PROCESSOR_EULA_LAUNCH_URLS with group context" do
@@ -2903,7 +2934,7 @@ describe DiscussionTopicsController do
     end
 
     context "usage rights - student" do
-      let(:data) { fixture_file_upload("docs/txt.txt", "text/plain", true) }
+      let(:data) { fixture_file_upload("docs/txt.txt", "text/plain", binary: true) }
 
       before { user_session(@student) }
 
@@ -2984,8 +3015,8 @@ describe DiscussionTopicsController do
       user_session(@teacher)
       section1 = @course.course_sections.create!(name: "Section 1")
       section2 = @course.course_sections.create!(name: "Section 2")
-      @course.enroll_teacher(@teacher, section: section1, allow_multiple_enrollments: true).accept(true)
-      @course.enroll_teacher(@teacher, section: section2, allow_multiple_enrollments: true).accept(true)
+      @course.enroll_teacher(@teacher, section: section1, allow_multiple_enrollments: true).accept(force: true)
+      @course.enroll_teacher(@teacher, section: section2, allow_multiple_enrollments: true).accept(force: true)
 
       group_category = @course.group_categories.create(name: "gc")
       group = @course.groups.create!(group_category:)
@@ -3021,6 +3052,30 @@ describe DiscussionTopicsController do
             title: "Updated Topic",
           })
       expect(response).to have_http_status :bad_request
+    end
+
+    it "allows updating an announcement when one enrolled section was deleted via SIS" do
+      user_session(@teacher)
+      section1 = @course.course_sections.create!(name: "Section 1")
+      section2 = @course.course_sections.create!(name: "Section 2")
+      @course.enroll_teacher(@teacher, section: section1, allow_multiple_enrollments: true).accept!
+      @course.enroll_teacher(@teacher, section: section2, allow_multiple_enrollments: true).accept!
+      Enrollment.limit_privileges_to_course_section!(@course, @teacher, true)
+      ann = @course.announcements.create!(
+        message: "testing",
+        is_section_specific: true,
+        course_sections: [section1, section2]
+      )
+
+      section2.update!(workflow_state: "deleted")
+      section2.enrollments.update_all(workflow_state: "deleted")
+
+      put("update", params: {
+            course_id: @course.id,
+            topic_id: ann.id,
+            title: "Updated Announcement",
+          })
+      expect(response).to have_http_status :ok
     end
 
     it "Allows an admin to update a section-specific discussion" do
@@ -3144,7 +3199,7 @@ describe DiscussionTopicsController do
       put("update", params: { course_id: @course.id, topic_id: @topic.id, pinned: "1" }, format: "json")
       @topic.reload
       expect(@topic.pinned).to be_truthy
-      expect(@topic.editor).to_not eq @teacher
+      expect(@topic.editor).not_to eq @teacher
     end
 
     it "does not clear delayed_post_at if published is not changed" do
@@ -3203,7 +3258,7 @@ describe DiscussionTopicsController do
     end
 
     it "attaches a file and handles duplicates" do
-      data = fixture_file_upload("docs/txt.txt", "text/plain", true)
+      data = fixture_file_upload("docs/txt.txt", "text/plain", binary: true)
       attachment_model context: @course, uploaded_data: data, folder: Folder.unfiled_folder(@course)
       put "update", params: { course_id: @course.id, topic_id: @topic.id, attachment: data }, format: "json"
       expect(response).to be_successful
@@ -3231,7 +3286,7 @@ describe DiscussionTopicsController do
       @course.save!
       old_count = DiscussionTopic.count
       # the doc.doc is a 63 kb file
-      data = fixture_file_upload("docs/doc.doc", "application/msword", true)
+      data = fixture_file_upload("docs/doc.doc", "application/msword", binary: true)
       post "create", params: topic_params(@course, { attachment: data }), format: :json
       expect(response).to have_http_status :bad_request
       expect(response.body).to include("Course storage quota exceeded")
@@ -3242,7 +3297,7 @@ describe DiscussionTopicsController do
       uuid = "1234-abcd"
       allow(InstFS).to receive_messages(enabled?: true, direct_upload: uuid)
 
-      data = fixture_file_upload("docs/txt.txt", "text/plain", true)
+      data = fixture_file_upload("docs/txt.txt", "text/plain", binary: true)
       attachment_model context: @course, uploaded_data: data, folder: Folder.unfiled_folder(@course)
       put "update", params: { course_id: @course.id, topic_id: @topic.id, attachment: data }, format: "json"
 
@@ -3446,7 +3501,7 @@ describe DiscussionTopicsController do
 
     it "increment discussion_topic.created.attachment" do
       user_session @teacher
-      data = fixture_file_upload("docs/txt.txt", "text/plain", true)
+      data = fixture_file_upload("docs/txt.txt", "text/plain", binary: true)
       attachment_model context: @course, uploaded_data: data, folder: Folder.unfiled_folder(@course)
       post "create", params: topic_params(@course, { attachment: data }), format: :json
       expect(response).to be_successful

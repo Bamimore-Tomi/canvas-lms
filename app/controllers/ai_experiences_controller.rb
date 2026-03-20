@@ -73,8 +73,6 @@
 class AiExperiencesController < ApplicationController
   include Api::V1::AiExperience
 
-  protect_from_forgery except: %i[create update destroy], with: :exception
-
   before_action :require_context
   before_action :check_ai_experiences_feature_flag
   before_action :require_access_right, only: [:index, :show]
@@ -98,6 +96,12 @@ class AiExperiencesController < ApplicationController
     # Students (non-managers) should only see published experiences
     @experiences = @experiences.where(workflow_state: "published") unless can_manage
     @experiences = @experiences.where(workflow_state: params[:workflow_state]) if params[:workflow_state].present?
+
+    # Sync index status for actively indexing experiences
+    if @context.feature_enabled?(:ai_experiences_context_file_upload)
+      sync_in_progress_index_statuses(@experiences)
+    end
+
     set_active_tab "ai_experiences"
     add_crumb t("#crumbs.ai_experiences", "AI Experiences")
     respond_to do |format|
@@ -132,11 +136,19 @@ class AiExperiencesController < ApplicationController
     set_active_tab "ai_experiences"
     add_crumb t("#crumbs.ai_experiences", "AI Experiences"), course_ai_experiences_path(@context)
     add_crumb @ai_experience.title
+    if @context.feature_enabled?(:ai_experiences_context_file_upload) &&
+       @ai_experience.llm_conversation_context_id.present?
+      LLMConversationContextManager.sync_index_status(ai_experience: @ai_experience)
+    end
+
     respond_to do |format|
       format.html do
         @page_title = @ai_experience.title
         js_bundle :ai_experiences_show
-        js_env(AI_EXPERIENCE: ai_experience_json(@ai_experience, @current_user, session, can_manage:))
+        js_env({ AI_EXPERIENCE: ai_experience_json(@ai_experience, @current_user, session, can_manage:) })
+        js_env[:FEATURES] ||= {}
+        js_env[:FEATURES][:ai_experiences_context_file_upload] =
+          @context.feature_enabled?(:ai_experiences_context_file_upload)
         render html: view_context.content_tag(:div, nil, id: "ai_experiences_show"),
                layout: true
       end
@@ -275,7 +287,7 @@ class AiExperiencesController < ApplicationController
     ActiveRecord::Associations.preload(students, enrollments: :sis_pseudonym)
 
     # Preload user associations for user_json
-    user_json_preloads(students, false, accounts: true, pseudonyms: true, profile: true)
+    user_json_preloads(students, accounts: true, pseudonyms: true, profile: true)
 
     # Build enrollment lookup hash: user_id => enrollment
     enrollments_by_user = students.flat_map(&:enrollments)
@@ -355,6 +367,7 @@ class AiExperiencesController < ApplicationController
     # The client handles communication with the external LLM service that stores the actual messages.
     client = LLMConversationClient.new(
       current_user: @conversation.user,
+      requesting_user: @current_user,
       root_account_uuid: @context.root_account.uuid,
       conversation_context_id: @experience.llm_conversation_context_id,
       facts: @experience.facts,
@@ -451,6 +464,18 @@ class AiExperiencesController < ApplicationController
                           end
 
       ai_experience_json(experience, @current_user, session, { submission_status:, can_manage: })
+    end
+  end
+
+  def sync_in_progress_index_statuses(experiences)
+    # Only sync experiences that are actively indexing to minimize API calls
+    experiences_to_sync = experiences.select do |exp|
+      exp.llm_conversation_context_id.present? &&
+        exp.context_index_status == "in_progress"
+    end
+
+    experiences_to_sync.each do |experience|
+      LLMConversationContextManager.sync_index_status(ai_experience: experience)
     end
   end
 end

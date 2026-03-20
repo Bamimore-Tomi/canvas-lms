@@ -47,10 +47,10 @@ export const videoDefaultSize = () => {
   return VIDEO_SIZE_DEFAULT
 }
 
-function onStudioEmbedOptionChanged(editor) {
+function onStudioEmbedOptionChanged(editor, videoContainer) {
   return embedOptions => {
     if (validateStudioEmbedOptions(embedOptions)) {
-      updateStudioEmbedOptions(editor, embedOptions)
+      updateStudioEmbedOptions(editor, embedOptions, videoContainer)
     }
   }
 }
@@ -65,6 +65,7 @@ export default class TrayController {
     this._announcer = this.createAnnouncer()
     this._captionsModified = false
     this.requestSubtitlesFromIframe = this.requestSubtitlesFromIframe.bind(this)
+    this.isStudioVideo = false
   }
 
   createAnnouncer() {
@@ -102,22 +103,28 @@ export default class TrayController {
     this.$videoContainer = findMediaPlayerIframe(editor.selection.getNode())
     this._shouldOpen = true
     this._captionsModified = false
-    this._isPlayerReady = false
 
     if (bridge.focusedEditor) {
       // Dismiss any content trays that may already be open
       bridge.hideTrays() // Do we need to implement .hideTray functionality in this controller as well?
     }
 
-    this._renderId++
-    this._renderTray()
-    this._announcer.textContent = ''
-    const videoOptions = asVideoElement(this.$videoContainer)
+    this.isStudioVideo = isStudioEmbeddedMedia(this.$videoContainer)
+    // for studio embeds we don't need to show spinners
+    // so it is ready by default
+    this._isPlayerReady = this.isStudioVideo
 
     // Clean broadcast listeners for any existing trays which are not shown (if not cleaned automatically)
     this._iframeLoadingListener?.abort()
 
-    this._listenForPlayerIframeToLoad(videoOptions.id)
+    if (!this.isStudioVideo) {
+      const videoOptions = asVideoElement(this.$videoContainer)
+      this._listenForPlayerIframeToLoad(videoOptions.id)
+    }
+
+    this._renderId++
+    this._renderTray()
+    this._announcer.textContent = ''
   }
 
   hideTrayForEditor(editor, skipFocusOnExit = false) {
@@ -184,6 +191,7 @@ export default class TrayController {
         attachment_id: videoOptions.attachment_id,
         subtitles: videoOptions.subtitles,
         skipCaptionUpdate: isCaptionImprovements,
+        viewerRestrictions: videoOptions.viewerRestrictions,
       }
 
       // If the video just edited came from a file uploaded to canvas
@@ -295,7 +303,7 @@ export default class TrayController {
   }
 
   _renderTray() {
-    const vo = asVideoElement(this.$videoContainer) || {}
+    const vo = asVideoElement(this.$videoContainer, this.isStudioVideo) || {}
 
     const element = (
       <VideoOptionsTray
@@ -325,13 +333,9 @@ export default class TrayController {
         }}
         open={this._shouldOpen}
         trayProps={bridge.trayProps.get(this._editor)}
-        studioOptions={
-          isStudioEmbeddedMedia(this.$videoContainer)
-            ? parseStudioOptions(this.$videoContainer)
-            : null
-        }
+        studioOptions={this.isStudioVideo ? parseStudioOptions(this.$videoContainer) : null}
         requestSubtitlesFromIframe={this.requestSubtitlesFromIframe}
-        onStudioEmbedOptionChanged={onStudioEmbedOptionChanged(this._editor)}
+        onStudioEmbedOptionChanged={onStudioEmbedOptionChanged(this._editor, this.$videoContainer)}
         isLoading={!this._isPlayerReady}
       />
     )

@@ -17,8 +17,8 @@
  */
 
 import React from 'react'
-import ReactDOM from 'react-dom'
-import {createRoot, type Root} from 'react-dom/client'
+import {type Root} from 'react-dom/client'
+import {render, legacyRender} from '@canvas/react'
 import round from '@canvas/round'
 import {useScope as createI18nScope} from '@canvas/i18n'
 import $ from 'jquery'
@@ -333,7 +333,6 @@ export function setup(): void {
     // For reference the mount point is located in the "views/submissions/show.html.erb" file
     const mountPoint = document.getElementById('checkpoints-grade-inputs-mount-point')
     if (mountPoint) {
-      const root = createRoot(mountPoint)
       const props = {
         assignment: {
           grading_type: (ENV as any).GRADING_TYPE,
@@ -354,16 +353,16 @@ export function setup(): void {
           ],
         },
       }
-      root.render(<CheckpointGradeRoot {...props} />)
+      render(<CheckpointGradeRoot {...props} />, mountPoint)
     }
 
     if ((ENV as any).EMOJIS_ENABLED) {
-      ReactDOM.render(
+      legacyRender(
         <EmojiPicker insertEmoji={insertEmoji} />,
         document.getElementById('emoji-picker-container'),
       )
 
-      ReactDOM.render(
+      legacyRender(
         <EmojiQuickPicker insertEmoji={insertEmoji} />,
         document.getElementById('emoji-quick-picker-container'),
       )
@@ -458,13 +457,13 @@ export function setup(): void {
         textAreaContainer?.setAttribute('aria-label', message)
         const textAreaErrorContainer = document.getElementById('textarea-error-container')
         if (textAreaErrorContainer) {
-          textAreaErrorRoot = createRoot(textAreaErrorContainer)
-          textAreaErrorRoot.render(
+          textAreaErrorRoot = render(
             <FormattedErrorMessage
               message={message}
               margin="xx-small 0 small 0"
               iconMargin="0 xx-small xxx-small 0"
             />,
+            textAreaErrorContainer,
           )
         }
         return
@@ -494,9 +493,8 @@ export function setup(): void {
         'submission[group_comment]': $('#submission_group_comment').prop('checked') ? '1' : '0',
       }
       if ($('.grading_value:visible').length > 0) {
-        formData['submission[grade]'] = GradeFormatHelper.delocalizeGrade(
-          $('.grading_value').val(),
-        )($ as any).ajaxJSON(url, method, formData, submissionLoaded)
+        formData['submission[grade]'] = GradeFormatHelper.delocalizeGrade($('.grading_value').val())
+        ;($ as any).ajaxJSON(url, method, formData, submissionLoaded)
       } else {
         $('.submission_header').loadingImage('remove')
         $('.save_comment_button').prop('disabled', false)
@@ -534,12 +532,11 @@ export function setup(): void {
           // Replace with Pill
           const container = document.createElement('div')
           parentElement.appendChild(container)
-          const fileRoot = createRoot(container)
           const removeFile = (root: Root, input: HTMLInputElement) => {
             root.unmount()
             input.remove()
           }
-          fileRoot.render(
+          const fileRoot = render(
             <Flex direction="column" margin="0 0 small 0">
               <Flex.Item>
                 <Tag
@@ -550,6 +547,7 @@ export function setup(): void {
                 />
               </Flex.Item>
             </Flex>,
+            container,
           )
         } else {
           console.log('No file selected')

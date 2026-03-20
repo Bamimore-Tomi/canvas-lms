@@ -59,6 +59,10 @@ module FeatureFlags
       end
     end
 
+    def self.project_lhotse_visible_on_hook(_context)
+      false
+    end
+
     def self.quizzes_next_visible_on_hook(context)
       root_account = context.root_account
       # assume all Quizzes.Next provisions so far have been done through uuid_provisioner
@@ -187,9 +191,14 @@ module FeatureFlags
     end
 
     def self.oak_for_users_visible_on_hook(context)
+      return false unless context.is_a?(User)
       return false unless oak_visible_on_hook(context)
 
       Oak::PermissionChecker.user_permitted?(context, Account.current_domain_root_account)
+    end
+
+    def self.oak_for_teachers_visible_on_hook(context)
+      context.feature_enabled?(:oak_for_admins)
     end
 
     # Private helper methods

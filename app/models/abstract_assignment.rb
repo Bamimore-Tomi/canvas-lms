@@ -68,7 +68,6 @@ class AbstractAssignment < ActiveRecord::Base
   DUPLICATED_IN_CONTEXT = "duplicated_in_context"
   QUIZ_SUBMISSION_VERSIONS_LIMIT = 65
   QUIZZES_NEXT_TIMEOUT = 15.minutes
-  QUIZZES_NEXT_IMPORTING_TIMEOUT = 30.minutes
   QUIZZES_NEXT_QUIZ_TYPES = %w[graded_quiz graded_survey ungraded_survey].freeze
   QUIZZES_NEXT_SURVEY_TYPES = %w[graded_survey ungraded_survey].freeze
   ROLLCALL_ASSIGNMENT_TITLE = "Roll Call Attendance"
@@ -758,7 +757,7 @@ class AbstractAssignment < ActiveRecord::Base
   validates :hide_in_gradebook, inclusion: { in: [false] }, if: -> { points_possible.present? && points_possible > 0 }
 
   acts_as_list scope: :assignment_group
-  simply_versioned keep: 5
+  simply_versioned keep: 5, versioned_associations: [:attachment_associations]
   sanitize_field :description, CanvasSanitize::SANITIZE
   copy_authorized_links(:description) { [context, nil] }
 
@@ -1202,7 +1201,7 @@ class AbstractAssignment < ActiveRecord::Base
     self.position = position_was if will_save_change_to_position? && position.nil? # don't allow setting to nil
 
     if !assignment_group || (assignment_group.deleted? && !deleted?)
-      ensure_assignment_group(false)
+      ensure_assignment_group(save: false)
     end
 
     self.title ||= assignment_group.default_assignment_name || "Assignment"
@@ -1246,14 +1245,14 @@ class AbstractAssignment < ActiveRecord::Base
   end
   protected :default_values
 
-  def ensure_assignment_group(do_save = true)
+  def ensure_assignment_group(save: true)
     return if assignment_group_id
 
     return if skip_assignment_group_for_wiki_page?
 
     context.require_assignment_group
     self.assignment_group = context.assignment_groups.active.first
-    if do_save
+    if save
       GuardRail.activate(:primary) { save! }
     end
   end
@@ -1571,7 +1570,7 @@ class AbstractAssignment < ActiveRecord::Base
 
   # call this to perform notifications on an Assignment that is not being saved
   # (useful when a batch of overrides associated with a new assignment have been saved)
-  def do_notifications!(prior_version = nil, notify = false)
+  def do_notifications!(prior_version = nil, notify: false)
     # TODO: this will blow up if the group_category string is set on the
     # previous version, because it gets confused between the db string field
     # and the association.  one more reason to drop the db column
@@ -1759,7 +1758,7 @@ class AbstractAssignment < ActiveRecord::Base
       GradingStandard.default_instance
   end
 
-  def score_to_grade(score = 0.0, given_grade = nil, force_letter_grade = false)
+  def score_to_grade(score = 0.0, given_grade = nil, force_letter_grade: false)
     result = score.to_f
     case force_letter_grade ? "letter_grade" : self.grading_type
     when "percent"
@@ -3494,7 +3493,7 @@ class AbstractAssignment < ActiveRecord::Base
   scope :importing_for_too_long, lambda {
     where(
       "workflow_state = 'importing' AND importing_started_at < ?",
-      QUIZZES_NEXT_IMPORTING_TIMEOUT.ago
+      Services::NewQuizzes.importing_timeout_in_minutes.ago
     )
   }
 
@@ -4199,8 +4198,8 @@ class AbstractAssignment < ActiveRecord::Base
   end
 
   def grader_ids_to_anonymous_ids
-    @grader_ids_to_anonymous_ids ||= moderation_graders.each_with_object({}) do |grader, map|
-      map[grader.user_id.to_s] = grader.anonymous_id
+    @grader_ids_to_anonymous_ids ||= moderation_graders.to_h do |grader|
+      [grader.user_id.to_s, grader.anonymous_id]
     end
   end
 
@@ -4737,8 +4736,8 @@ class AbstractAssignment < ActiveRecord::Base
 
     states = %w[inactive completed deleted invited]
     active_user_ids = course.instructors.where.not(enrollments: { workflow_state: states }).pluck(:id)
-    provisional_grades.each_with_object({}) do |provisional_grade, hash|
-      hash[provisional_grade.id] = active_user_ids.include?(provisional_grade.scorer_id)
+    provisional_grades.to_h do |provisional_grade|
+      [provisional_grade.id, active_user_ids.include?(provisional_grade.scorer_id)]
     end
   end
 

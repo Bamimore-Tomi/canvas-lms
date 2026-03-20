@@ -51,16 +51,15 @@ class NavMenuLink < ActiveRecord::Base
 
   # See useNavMenuLinksStore.ts
   def self.as_existing_link_objects
-    pluck(:id, :label).map do |(id, label)|
-      { type: "existing", id:, label: }
+    pluck(:id, :label, :course_nav, :account_nav, :user_nav).map do |(id, label, course_nav, account_nav, user_nav)|
+      { type: "existing", id:, label:, placements: { course_nav:, account_nav:, user_nav: } }
     end
   end
 
-  def self.sync_with_link_objects_json(context:, link_objects_json:)
-    if context.root_account.feature_enabled?(:nav_menu_links) && link_objects_json
+  def self.sync_with_link_objects_json(context:, link_objects_json:, can_manage_links: false)
+    if context.root_account.feature_enabled?(:nav_menu_links) && link_objects_json && can_manage_links
       sync_with_link_objects(context:, link_objects: JSON.parse(link_objects_json))
     end
-
     true
   rescue JSON::ParserError => e
     Rails.logger.error("Failed to parse link_objects_json: #{e.message}")
@@ -76,17 +75,24 @@ class NavMenuLink < ActiveRecord::Base
     link_objects = link_objects.map(&:with_indifferent_access)
 
     current_link_ids = Set.new(active.where(context:).pluck(:id).map(&:to_s))
-    link_ids_to_remove = current_link_ids - link_objects.pluck(:id).compact.map(&:to_s)
+    link_ids_to_remove = current_link_ids - link_objects.filter_map { |obj| obj[:id]&.to_s }
+
+    new_links = link_objects.select { |link| link[:type] == "new" }
 
     transaction do
-      link_objects.select { |link| link[:type] == "new" }.each do |link|
-        NavMenuLink.create!(url: link[:url]&.to_s, label: link[:label]&.to_s, context:, course_nav: true)
+      new_links.each do |link|
+        placements = link[:placements] || {}
+        course_nav = placements[:course_nav] || false
+        account_nav = placements[:account_nav] || false
+        user_nav = placements[:user_nav] || false
+        NavMenuLink.create!(url: link[:url]&.to_s, label: link[:label]&.to_s, context:, course_nav:, account_nav:, user_nav:)
       end
-      where(context:, id: link_ids_to_remove.to_a).destroy_all
+      where(context:, id: link_ids_to_remove.to_a).destroy_all if link_ids_to_remove.any?
     end
 
-    if link_ids_to_remove.any? || link_objects.any? { |link| link[:type] == "new" }
+    if link_ids_to_remove.any? || new_links.any?
       Lti::NavigationCache.new(context.root_account).invalidate_cache_key
     end
   end
+  private_class_method :sync_with_link_objects
 end

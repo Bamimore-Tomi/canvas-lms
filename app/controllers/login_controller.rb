@@ -25,7 +25,7 @@ class LoginController < ApplicationController
   before_action :run_login_hooks, only: :new
   before_action :fix_ms_office_redirects, only: :new
   skip_before_action :require_reacceptance_of_terms
-  before_action :require_user, only: :session_token
+  skip_before_action :require_user, only: %i[clear_file_session logout_landing new]
 
   def new
     if @current_user &&
@@ -142,13 +142,11 @@ class LoginController < ApplicationController
   private
 
   def redirect_to_discovery_url
-    if Account.site_admin.feature_enabled?(:new_login_ui_identity_discovery_page) &&
+    if @domain_root_account.discovery_page_allowed? &&
        @domain_root_account.discovery_page_active? &&
        !params[:authentication_provider]
-      # TODO: redirect to external Identity Service discovery URL (SPA hosted by Identity Service)
-      # identity_service_discovery_url = @domain_root_account.identity_service_discovery_url(request)
-      # redirect_to identity_service_discovery_url
-      # increment_statsd(:discovery_page_redirect)
+      redirect_to @domain_root_account.discovery_page_url
+      increment_statsd(:discovery_page_redirect)
     elsif @domain_root_account.auth_discovery_url(request) && !params[:authentication_provider]
       auth_discovery_url = @domain_root_account.auth_discovery_url(request)
       if flash[:delegated_message]

@@ -209,14 +209,14 @@ class DiscussionTopic < ActiveRecord::Base
 
     if unlocked_teacher.count > 0
       CourseSection.where(id: DiscussionTopicSectionVisibility.active
-                                                              .where(discussion_topic_id: id)
+                              .where(discussion_topic_id: id)
                                                               .select("discussion_topic_section_visibilities.course_section_id"))
     else
       CourseSection.where(id: DiscussionTopicSectionVisibility.active.where(discussion_topic_id: id)
                                                               .where(Enrollment.active_or_pending
-                                                                                             .where(user_id: user)
-                                                                                             .where("enrollments.course_section_id = discussion_topic_section_visibilities.course_section_id")
-                                                                                             .arel.exists)
+                              .where(user_id: user)
+                              .where("enrollments.course_section_id = discussion_topic_section_visibilities.course_section_id")
+                              .arel.exists)
                                                               .select("discussion_topic_section_visibilities.course_section_id"))
     end
   end
@@ -1618,7 +1618,7 @@ class DiscussionTopic < ActiveRecord::Base
       tags_to_update += assignment.context_module_tags
       if context.grants_right?(user, :participate_as_student) && assignment.visible_to_user?(user) && [:contributed, :deleted].include?(action)
         only_update = (action == :deleted) # if we're deleting an entry, don't make a submission if it wasn't there already
-        ensure_submission(user, only_update)
+        ensure_submission(user, only_update:)
       end
     end
     unless action == :deleted
@@ -1626,7 +1626,7 @@ class DiscussionTopic < ActiveRecord::Base
     end
   end
 
-  def ensure_submission(user, only_update = false)
+  def ensure_submission(user, only_update: false)
     topic = (root_topic? && child_topic_for(user)) || self
 
     submissions = []
@@ -1656,7 +1656,7 @@ class DiscussionTopic < ActiveRecord::Base
 
     return unless submissions.any?
 
-    attachment_ids = all_entries_for_user.where.not(attachment_id: nil).pluck(:attachment_id).sort.map(&:to_s).join(",")
+    attachment_ids = all_entries_for_user.where.not(attachment_id: nil).pluck(:attachment_id).sort.join(",")
 
     submissions.each do |s|
       s.attachment_ids = attachment_ids
@@ -1725,7 +1725,7 @@ class DiscussionTopic < ActiveRecord::Base
     non_nil_users.select { |u| permitted_user_ids.include?(u.id) }
   end
 
-  def participants(include_observers = false)
+  def participants(include_observers: false)
     participants = context.participants(include_observers:, by_date: true)
     participants_in_section = users_with_section_visibility(participants.compact)
     if user && !participants_in_section.to_set(&:id).include?(user.id)
@@ -1739,16 +1739,16 @@ class DiscussionTopic < ActiveRecord::Base
       unpublished? || not_available_yet? || not_available_anymore?
   end
 
-  def active_participants(include_observers = false)
+  def active_participants(include_observers: false)
     if visible_to_admins_only? && context.respond_to?(:participating_admins)
       context.participating_admins
     else
-      participants(include_observers)
+      participants(include_observers:)
     end
   end
 
-  def active_participants_include_tas_and_teachers(include_observers = false)
-    participants = active_participants(include_observers)
+  def active_participants_include_tas_and_teachers(include_observers: false)
+    participants = active_participants(include_observers:)
     if context.is_a?(Group) && !context.course.nil?
       participants += context.course.participating_instructors_by_date
       participants = participants.compact.uniq
@@ -1999,7 +1999,7 @@ class DiscussionTopic < ActiveRecord::Base
     end
   end
 
-  def entries_for_feed(user, podcast_feed = false)
+  def entries_for_feed(user, podcast_feed: false)
     return [] unless user_can_see_posts?(user)
     return [] if locked_for?(user, check_policies: true)
 

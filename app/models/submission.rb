@@ -409,7 +409,7 @@ class Submission < ActiveRecord::Base
   end
 
   # see .needs_grading_conditions
-  def needs_grading?(was = false)
+  def needs_grading?(was: false)
     suffix = was ? "_before_last_save" : ""
 
     !send(:"submission_type#{suffix}").nil? &&
@@ -427,7 +427,7 @@ class Submission < ActiveRecord::Base
     Submission.active.having_submission.where(user_id:)
               .where(assignment_id: SubAssignment.active.select(:id).where(parent_assignment_id: assignment_id))
               .find_each do |sub_assignment_submission|
-                return true if sub_assignment_submission.needs_grading?
+      return true if sub_assignment_submission.needs_grading?
     end
     false
   end
@@ -441,7 +441,7 @@ class Submission < ActiveRecord::Base
   end
 
   def needs_grading_changed?
-    needs_grading? != needs_grading?(:was)
+    needs_grading? != needs_grading?(was: true)
   end
 
   def submitted_changed?
@@ -759,7 +759,9 @@ class Submission < ActiveRecord::Base
   end
 
   def can_read_submission_user_name?(user, session)
-    return false if user_id != user.id && assignment.anonymize_students?
+    if user_id != user.id && (assignment.anonymize_students? || assignment.new_quizzes_anonymous_participants?)
+      return false
+    end
 
     !assignment.anonymous_peer_reviews? ||
       user_id == user.id ||
@@ -962,18 +964,19 @@ class Submission < ActiveRecord::Base
   def originality_data
     return {} if assignment.cpf_migrated?
 
-    data = originality_reports_for_display.each_with_object({}) do |originality_report, hash|
-      hash[originality_report.asset_key] = {
-        similarity_score: originality_report.originality_score&.round(2),
-        state: originality_report.state,
-        attachment_id: originality_report.attachment_id,
-        report_url: originality_report.report_launch_path(assignment),
-        view_report_url: view_report_url("originality_report", originality_report.asset_key),
-        status: originality_report.workflow_state,
-        error_message: originality_report.error_message,
-        created_at: originality_report.created_at,
-        updated_at: originality_report.updated_at,
-      }
+    data = originality_reports_for_display.to_h do |originality_report|
+      [originality_report.asset_key,
+       {
+         similarity_score: originality_report.originality_score&.round(2),
+         state: originality_report.state,
+         attachment_id: originality_report.attachment_id,
+         report_url: originality_report.report_launch_path(assignment),
+         view_report_url: view_report_url("originality_report", originality_report.asset_key),
+         status: originality_report.workflow_state,
+         error_message: originality_report.error_message,
+         created_at: originality_report.created_at,
+         updated_at: originality_report.updated_at,
+       }]
     end
 
     legacy_turnitin_data = turnitin_data.except(:webhook_info, :provider, :last_processed_attempt)
@@ -1158,7 +1161,7 @@ class Submission < ActiveRecord::Base
 
   # this function will check if the score needs to be updated and update/save the new score if so,
   # otherwise, it just returns the vericite_data_hash
-  def vericite_data(lookup_data = false)
+  def vericite_data(lookup_data: false)
     self.vericite_data_hash ||= {}
     # check to see if the score is stale, if so, fetch it again
     update_scores = false
@@ -1290,7 +1293,7 @@ class Submission < ActiveRecord::Base
     if data_changed
       vericite_data_changed!
       if recheck_score_all
-        with_versioning(false, &:save!)
+        without_versioning(&:save!)
       else
         save
       end
@@ -1792,7 +1795,7 @@ class Submission < ActiveRecord::Base
         model = version.model
         # since vericite_data is a function, make sure you are cloning the most recent vericite_data_hash
         if vericiteable?
-          model.turnitin_data = vericite_data(true)
+          model.turnitin_data = vericite_data(lookup_data: true)
         # only use originality data if it's loaded, we want to avoid making N+1 queries
         elsif association(:originality_reports).loaded?
           model.turnitin_data = originality_data
@@ -2709,10 +2712,13 @@ class Submission < ActiveRecord::Base
     res.user_id = user_id
     res.workflow_state = "assigned" if res.new_record?
 
-    if res.new_record? && assignment.context.feature_enabled?(:peer_review_allocation_and_grading) &&
+    # To maintain backward compatibility with legacy peer reviews, we link the assessment
+    # request to the peer_review_sub_assignment regardless of the feature flag state
+    peer_review_sub = assignment.peer_review_sub_assignment
+    if res.new_record? &&
        assignment.peer_reviews? &&
-       assignment.peer_review_sub_assignment.present?
-      res.peer_review_sub_assignment_id = assignment.peer_review_sub_assignment.id
+       peer_review_sub.present?
+      res.peer_review_sub_assignment_id = peer_review_sub.id
     end
 
     res.send_reminder! # this method also saves the assessment_request
@@ -2832,7 +2838,7 @@ class Submission < ActiveRecord::Base
       return nil if required_count <= 0
 
       discussion_topic.discussion_entries
-                      .non_top_level_for_user(user)
+                      .non_top_level_for_user(user_id)
                       .order(created_at: :asc)
                       .offset(required_count - 1)
                       .limit(1)

@@ -34,16 +34,16 @@ describe SplitUsers do
       UserMerge.from(restored_user).into(source_user)
       SplitUsers.split_db_users(restored_user)
       expect(restored_user.reload.preferences[:accepted_terms]).to be_nil
-      expect(source_user.reload.preferences[:accepted_terms]).to_not be_nil
+      expect(source_user.reload.preferences[:accepted_terms]).not_to be_nil
     end
 
     it "restores terms_of use other way" do
       restored_user.accept_terms
       restored_user.save!
       UserMerge.from(restored_user).into(source_user)
-      expect(source_user.reload.preferences[:accepted_terms]).to_not be_nil
+      expect(source_user.reload.preferences[:accepted_terms]).not_to be_nil
       SplitUsers.split_db_users(source_user)
-      expect(restored_user.reload.preferences[:accepted_terms]).to_not be_nil
+      expect(restored_user.reload.preferences[:accepted_terms]).not_to be_nil
       expect(source_user.reload.preferences[:accepted_terms]).to be_nil
     end
 
@@ -63,8 +63,8 @@ describe SplitUsers do
       source_user.save!
       UserMerge.from(restored_user).into(source_user)
       SplitUsers.split_db_users(source_user)
-      expect(source_user.reload.preferences[:accepted_terms]).to_not be_nil
-      expect(restored_user.reload.preferences[:accepted_terms]).to_not be_nil
+      expect(source_user.reload.preferences[:accepted_terms]).not_to be_nil
+      expect(restored_user.reload.preferences[:accepted_terms]).not_to be_nil
     end
 
     it "restores names" do
@@ -620,6 +620,21 @@ describe SplitUsers do
       expect(admin2.user).to eq restored_user
       expect(admin3.reload.workflow_state).to eq "active"
       expect(admin3.reload.user).to eq source_user
+    end
+
+    it "restores reactivated admin to its prior workflow_state on split" do
+      target_admin = account1.account_users.create!(user: source_user)
+      target_admin.destroy
+      account1.account_users.create!(user: restored_user)
+
+      UserMerge.from(restored_user).into(source_user)
+      expect(target_admin.reload.workflow_state).to eq "active"
+
+      SplitUsers.split_db_users(source_user)
+
+      target_admin.reload
+      expect(target_admin.workflow_state).to eq "deleted"
+      expect(target_admin.user).to eq source_user
     end
 
     context "sharding" do

@@ -28,6 +28,8 @@ import {View} from '@instructure/ui-view'
 import formatMessage from 'format-message'
 import {useRef, useState} from 'react'
 import CanvasSelect from '../shared/CanvasSelect'
+import {CC_FILE_MAX_BYTES} from '../shared/constants'
+import {trackPendoEvent} from '../utils/trackPendoEvent'
 import {validateCaptionFile} from './utils/validation'
 
 interface ManualCaptionCreatorProps {
@@ -36,6 +38,7 @@ interface ManualCaptionCreatorProps {
   onCancel: () => void
   liveRegion: () => HTMLElement | null
   mountNode?: HTMLElement | (() => HTMLElement | null)
+  onDirtyStateChanged?: (isDirty: boolean) => void
 }
 
 export function ManualCaptionCreator({
@@ -44,6 +47,7 @@ export function ManualCaptionCreator({
   onCancel,
   liveRegion,
   mountNode,
+  onDirtyStateChanged,
 }: ManualCaptionCreatorProps) {
   const [selectedLanguageId, setSelectedLanguageId] = useState<string>('')
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -56,14 +60,22 @@ export function ManualCaptionCreator({
       setSelectedLanguageId(String(data))
       setShowLanguageError(false)
     }
+    onDirtyStateChanged?.(Boolean(data || selectedFile))
   }
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
+    onDirtyStateChanged?.(Boolean(file || selectedLanguageId))
     if (!file) return
 
     const validation = validateCaptionFile(file)
     if (!validation.valid) {
+      if (file.size > CC_FILE_MAX_BYTES) {
+        trackPendoEvent('canvas_caption_validation_error', {
+          flow_type: 'upload_file',
+          error_type: 'file_too_large',
+        })
+      }
       setFileValidationError(validation.error || '')
       setSelectedFile(null)
     } else {
@@ -74,10 +86,18 @@ export function ManualCaptionCreator({
 
   const handleUploadClick = () => {
     if (!selectedLanguageId) {
+      trackPendoEvent('canvas_caption_validation_error', {
+        flow_type: 'upload_file',
+        error_type: 'missing_language',
+      })
       setShowLanguageError(true)
     }
 
     if (!selectedFile) {
+      trackPendoEvent('canvas_caption_validation_error', {
+        flow_type: 'upload_file',
+        error_type: 'missing_file',
+      })
       setFileValidationError(`Please select a file before uploading.`)
     }
 
@@ -91,7 +111,7 @@ export function ManualCaptionCreator({
     <Flex as="div" direction="column" gap="medium">
       <Flex.Item overflowY="hidden" overflowX="hidden">
         <Heading variant="titleCardMini">{formatMessage('Add New Caption')}</Heading>
-        <Text variant="contentSmall">
+        <Text id="cc-file-hint" variant="contentSmall">
           {formatMessage('Upload a subtitle track in either the SRT or WebVTT format.')}
         </Text>
       </Flex.Item>
@@ -123,6 +143,7 @@ export function ManualCaptionCreator({
             OPTION_SELECTED: '{option} selected.',
           }}
           onChange={handleLanguageChange}
+          liveRegion={liveRegion}
         >
           {languages.map(option => (
             // @ts-expect-error - CanvasSelect.Option is a JS component without TS definitions
@@ -171,18 +192,18 @@ export function ManualCaptionCreator({
           <Flex.Item shouldShrink={false}>
             <Button
               onClick={() => fileInputRef.current?.click()}
-              aria-label={
-                selectedFile
-                  ? formatMessage('Selected file: {name}', {name: selectedFile.name})
-                  : formatMessage('Choose File')
-              }
+              aria-describedby="cc-file-hint cc-file-status"
             >
               {formatMessage('Choose File')}
             </Button>
           </Flex.Item>
-          {!selectedFile && <Text variant="contentSmall">{formatMessage('No file chosen')}</Text>}
+          {!selectedFile && (
+            <Text id="cc-file-status" variant="contentSmall">
+              {formatMessage('No file chosen')}
+            </Text>
+          )}
           {selectedFile && (
-            <View minWidth={0}>
+            <View id="cc-file-status" minWidth={0}>
               <Text variant="contentSmall">
                 <TruncateText>{selectedFile.name}</TruncateText>
               </Text>

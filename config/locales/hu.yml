@@ -7581,6 +7581,7 @@ hu:
   course_home_4c4c0107: "Kurzus főoldala"
   course_home_page_5c61dba7: "A kurzus kezdőlapja"
   course_home_sub_navigation_b1ee6b03: "Kurzus kezdőlap alnavigáció"
+  course_id_33633604: "Kurzusazonosító:"
   course_id_8bd2a21c: Kurzusazonosító
   course_id_a7c924d5: kurzusazonosító
   course_id_b0bc82d4: Kurzusazonosító
@@ -9680,6 +9681,7 @@ hu:
   drag_and_drop_or_click_to_browse_your_local_filesy_e2f0e62f: "Húzza át, vagy kattintson a helyi fájlrendszer böngészéséhez"
   drag_and_drop_your_image_here_or_7fba7c14: "Húzza ide a képet, vagy"
   drag_to_rearrange_sections_637efee3: "Ragadja meg az elemeket a szekciók sorrendjének megváltoztatásához"
+  drag_to_reorder_e4257792: "Ragadja meg a sorrend módosításához"
   drop_coursename_813d3162: "%{courseName} eldobása"
   drop_files_here_to_add_to_module_236304f5: "Húzza ide a fájlokat a modulhoz való hozzáadáshoz"
   drop_files_here_to_upload_ce0f50f9: "Húzza ide a fájlokat a feltöltéshez"
@@ -25913,6 +25915,7 @@ hu:
   to_do_1d554f36: Teendők
   to_do_5526f10a: "Teendők:"
   to_do_6ac7b2dc: "Teendők:"
+  to_do_88d16b94: Teendők
   to_do_date_2cb4bf7b: "Teendő napja:"
   to_do_date_84b53178: "Tennivaló:%{date}"
   to_do_date_ascending_c3a59abb: "Teendő dátuma: Növekvő"

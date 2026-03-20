@@ -65,6 +65,7 @@ class WikiPage < ActiveRecord::Base
   has_many :wiki_page_lookups, inverse_of: :wiki_page
   has_one :master_content_tag, class_name: "MasterCourses::MasterContentTag", inverse_of: :wiki_page
   has_one :block_editor, as: :context, dependent: :destroy
+  has_one :external_content_reference, dependent: :destroy, inverse_of: :wiki_page
   has_one :estimated_duration, dependent: :destroy, inverse_of: :wiki_page
   has_many :attachment_associations, as: :context, inverse_of: :context
 
@@ -302,14 +303,16 @@ class WikiPage < ActiveRecord::Base
   end
 
   has_a_broadcast_policy
-  simply_versioned exclude: SIMPLY_VERSIONED_EXCLUDE_FIELDS, when: proc { |wp|
-    # always create a version when restoring a deleted page
-    next true if wp.workflow_state_changed? && wp.workflow_state_was == "deleted"
+  simply_versioned exclude: SIMPLY_VERSIONED_EXCLUDE_FIELDS,
+                   when: proc { |wp|
+                     # always create a version when restoring a deleted page
+                     next true if wp.workflow_state_changed? && wp.workflow_state_was == "deleted"
 
-    # :user_id and :updated_at do not merit creating a version, but should be saved
-    exclude_fields = [:user_id, :updated_at].concat(SIMPLY_VERSIONED_EXCLUDE_FIELDS).map(&:to_s)
-    (wp.changes.keys.map(&:to_s) - exclude_fields).present?
-  }
+                     # :user_id and :updated_at do not merit creating a version, but should be saved
+                     exclude_fields = [:user_id, :updated_at].concat(SIMPLY_VERSIONED_EXCLUDE_FIELDS).map(&:to_s)
+                     (wp.changes.keys.map(&:to_s) - exclude_fields).present?
+                   },
+                   versioned_associations: [:attachment_associations]
 
   after_save :remove_changed_flag
 
@@ -774,7 +777,7 @@ class WikiPage < ActiveRecord::Base
 
     # PineClient requires a user object with uuid and global_id, but we don't have a user in this context
     # and the action is more of a system-initiated action than a user-initiated action
-    null_user = Struct.new(:uuid, :global_id, keyword_init: true).new(uuid: nil, global_id: nil)
+    null_user = Struct.new(:uuid, :global_id).new(uuid: nil, global_id: nil)
 
     PineClient.ingest_html(
       html_content: body,
@@ -805,7 +808,7 @@ class WikiPage < ActiveRecord::Base
 
     # PineClient requires a user object with uuid and global_id, but we don't have a user in this context
     # and the action is more of a system-initiated action than a user-initiated action
-    null_user = Struct.new(:uuid, :global_id, keyword_init: true).new(uuid: nil, global_id: nil)
+    null_user = Struct.new(:uuid, :global_id).new(uuid: nil, global_id: nil)
 
     delay(
       n_strand: ["horizon_wiki_deletion", context.global_root_account_id],

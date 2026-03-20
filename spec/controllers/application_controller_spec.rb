@@ -122,7 +122,7 @@ RSpec.describe ApplicationController do
 
       it "sets items" do
         expect(HostUrl).to receive(:file_host).with(Account.default, "test.host").and_return("files.example.com")
-        controller.js_env FOO: "bar"
+        controller.js_env({ FOO: "bar" })
         expect(controller.js_env[:FOO]).to eq "bar"
         expect(controller.js_env[:files_domain]).to eq "files.example.com"
       end
@@ -367,6 +367,11 @@ RSpec.describe ApplicationController do
               course2.enroll_student(@user).tap(&:accept!)
               expect(controller.js_env[:widget_dashboard_overridable]).to be false
             end
+
+            it "is not set for account admins" do
+              Account.default.account_users.create!(user: @user)
+              expect(controller.js_env[:widget_dashboard_overridable]).to be_nil
+            end
           end
         end
       end
@@ -487,19 +492,19 @@ RSpec.describe ApplicationController do
       end
 
       it "allows multiple items" do
-        controller.js_env A: "a", B: "b"
+        controller.js_env({ A: "a", B: "b" })
         expect(controller.js_env[:A]).to eq "a"
         expect(controller.js_env[:B]).to eq "b"
       end
 
       it "does not allow overwriting a key" do
-        controller.js_env REAL_SLIM_SHADY: "please stand up"
-        expect { controller.js_env(REAL_SLIM_SHADY: "poser") }.to raise_error("js_env key REAL_SLIM_SHADY is already taken")
+        controller.js_env({ REAL_SLIM_SHADY: "please stand up" })
+        expect { controller.js_env({ REAL_SLIM_SHADY: "poser" }) }.to raise_error("js_env key REAL_SLIM_SHADY is already taken")
       end
 
       it "overwrites a key if told explicitly to do so" do
-        controller.js_env REAL_SLIM_SHADY: "please stand up"
-        controller.js_env({ REAL_SLIM_SHADY: "poser" }, true)
+        controller.js_env({ REAL_SLIM_SHADY: "please stand up" })
+        controller.js_env({ REAL_SLIM_SHADY: "poser" }, overwrite: true)
         expect(controller.js_env[:REAL_SLIM_SHADY]).to eq "poser"
       end
 
@@ -807,6 +812,96 @@ RSpec.describe ApplicationController do
           end
         end
       end
+
+      describe "usage metrics and cookie consent" do
+        before do
+          Account.default.settings[:enable_usage_metrics] = true
+          request.host = "trusty.instructure.com"
+        end
+
+        def mock_dynamic_settings_for_pendo_cc(pendo_app_id = nil, domain_id = nil, vanity_domain_id = nil)
+          allow(DynamicSettings).to receive(:find).with(any_args).and_call_original
+          allow(DynamicSettings).to receive(:find).with("onetrust-cookie-consent").and_return(
+            DynamicSettings::FallbackProxy.new({ domain_id:, vanity_domain_id: })
+          )
+          allow(DynamicSettings).to receive(:find).with(tree: :private).and_return(
+            DynamicSettings::FallbackProxy.new({ pendo_app_id: })
+          )
+        end
+
+        describe "PENDO_APP_ID" do
+          it "when send_usage_metrics is disabled and the ID is set, it is not included in js_env" do
+            Account.default.disable_feature!(:send_usage_metrics)
+            mock_dynamic_settings_for_pendo_cc("pendos!")
+            expect(controller.js_env[:PENDO_APP_ID]).to be_nil
+          end
+
+          it "when send_usage_metrics is enabled and the ID is not set, it is not included in js_env" do
+            Account.default.enable_feature!(:send_usage_metrics)
+            mock_dynamic_settings_for_pendo_cc(nil)
+            expect(controller.js_env[:PENDO_APP_ID]).to be_nil
+          end
+
+          it "when send_usage_metrics is enabled and the ID is set, it is included in js_env" do
+            Account.default.enable_feature!(:send_usage_metrics)
+            mock_dynamic_settings_for_pendo_cc("pendos!")
+            expect(controller.js_env[:PENDO_APP_ID]).to eq "pendos!"
+          end
+        end
+
+        describe "ONETRUST_CONSENT_DOMAIN_ID" do
+          describe "when both SUM and CCN are enabled and settings exist" do
+            it "is included in js_env" do
+              Account.default.enable_feature!(:send_usage_metrics)
+              Account.default.enable_feature!(:cookie_consent_necessary)
+              mock_dynamic_settings_for_pendo_cc("pendos!", "cookie!")
+              expect(controller.js_env[:ONETRUST_CONSENT_DOMAIN_ID]).to eq "cookie!"
+            end
+
+            it "is included with the vanity domain ID if used from a vanity domain" do
+              Account.default.enable_feature!(:send_usage_metrics)
+              Account.default.enable_feature!(:cookie_consent_necessary)
+              mock_dynamic_settings_for_pendo_cc("pendos!", "cookie!", "vanity_cookie!")
+              request.host = "its.a.vanity.domain.com"
+              expect(controller.js_env[:ONETRUST_CONSENT_DOMAIN_ID]).to eq "vanity_cookie!"
+            end
+          end
+
+          describe "account-level override" do
+            before do
+              Account.default.settings[:onetrust_consent_domain_id] = "account_cookie!"
+            end
+
+            it "respects account-level override" do
+              Account.default.enable_feature!(:send_usage_metrics)
+              Account.default.enable_feature!(:cookie_consent_necessary)
+              mock_dynamic_settings_for_pendo_cc("pendos!", "cookie!")
+              expect(controller.js_env[:ONETRUST_CONSENT_DOMAIN_ID]).to eq "account_cookie!"
+            end
+          end
+
+          it "when all is enabled but the DynamicSetting key is not set, it is not included in js_env" do
+            Account.default.enable_feature!(:send_usage_metrics)
+            Account.default.enable_feature!(:cookie_consent_necessary)
+            mock_dynamic_settings_for_pendo_cc("pendos!")
+            expect(controller.js_env[:ONETRUST_CONSENT_DOMAIN_ID]).to be_nil
+          end
+
+          it "when all but :send_usage_metrics is enabled, DynamicSetting key is set, it is not included in js_env" do
+            Account.default.disable_feature!(:send_usage_metrics)
+            Account.default.enable_feature!(:cookie_consent_necessary)
+            mock_dynamic_settings_for_pendo_cc("pendos!", "cookie!")
+            expect(controller.js_env[:ONETRUST_CONSENT_DOMAIN_ID]).to be_nil
+          end
+
+          it "when all but :cookie_consent_necessary is enabled, DynamicSetting key is set, it is not included in js_env" do
+            Account.default.enable_feature!(:send_usage_metrics)
+            Account.default.disable_feature!(:cookie_consent_necessary)
+            mock_dynamic_settings_for_pendo_cc("pendos!", "cookie!")
+            expect(controller.js_env[:ONETRUST_CONSENT_DOMAIN_ID]).to be_nil
+          end
+        end
+      end
     end
 
     describe "clean_return_to" do
@@ -982,7 +1077,7 @@ RSpec.describe ApplicationController do
         ctrl = ApplicationController.new
         ctrl.send(:assign_localizer)
         locale = nil
-        expect { locale = I18n.localizer.call }.to_not raise_error
+        expect { locale = I18n.localizer.call }.not_to raise_error
         expect(locale).to eq("en") # default locale
       end
 
@@ -1389,13 +1484,13 @@ RSpec.describe ApplicationController do
 
             it "does not display the assignment edit sidebar" do
               controller.send(:content_tag_redirect, course, content_tag, nil)
-              expect(assigns[:append_template]).to_not be_present
+              expect(assigns[:append_template]).not_to be_present
             end
 
             context "ENV.LTI_TOOL_FORM_ID" do
               it "sets a random id" do
                 expect(controller).to receive(:random_lti_tool_form_id).and_return("1")
-                expect(controller).to receive(:js_env).with(LTI_TOOL_FORM_ID: "1")
+                expect(controller).to receive(:js_env).with({ LTI_TOOL_FORM_ID: "1" })
                 controller.send(:content_tag_redirect, course, content_tag, nil)
               end
             end
@@ -1507,28 +1602,6 @@ RSpec.describe ApplicationController do
                   lti_deployment_id
                   lti_storage_target
                 ]
-              end
-
-              context "with lti_deployment_id_in_login_request FF off" do
-                before do
-                  @course.root_account.disable_feature!(:lti_deployment_id_in_login_request)
-                end
-
-                it "creates a login message that includes deployment_id" do
-                  subject
-                  expect(assigns[:lti_launch].params.keys).to match_array %w[
-                    iss
-                    login_hint
-                    target_link_uri
-                    lti_message_hint
-                    canvas_region
-                    canvas_environment
-                    client_id
-                    deployment_id
-                    lti_deployment_id
-                    lti_storage_target
-                  ]
-                end
               end
 
               it 'sets the "login_hint" to the current user lti id' do
@@ -2100,7 +2173,7 @@ RSpec.describe ApplicationController do
     end
 
     describe "external_tool_display_hash" do
-      def tool_settings(setting, include_class = false)
+      def tool_settings(setting, include_class: false)
         settings_hash = {
           url: "http://example.com/?#{setting}",
           icon_url: "http://example.com/icon.png?#{setting}",
@@ -2176,7 +2249,7 @@ RSpec.describe ApplicationController do
 
       it "all settings return canvas_icon_class if set" do
         @tool_settings.each do |setting|
-          @tool.send(:"#{setting}=", tool_settings(setting, true))
+          @tool.send(:"#{setting}=", tool_settings(setting, include_class: true))
           @tool.save!
 
           hash = controller.external_tool_display_hash(@tool, setting)
@@ -2281,7 +2354,7 @@ RSpec.describe ApplicationController do
 
       it "includes launch_method if set" do
         @tool_settings.each do |setting|
-          setting_hash = tool_settings(setting, true).merge(launch_method: "tray")
+          setting_hash = tool_settings(setting, include_class: true).merge(launch_method: "tray")
           @tool.send(:"#{setting}=", setting_hash)
           @tool.save!
 
@@ -2571,7 +2644,7 @@ RSpec.describe ApplicationController do
 
       controller.instance_variable_set(:@context, student)
       controller.send(:get_all_pertinent_contexts)
-      expect(controller.instance_variable_get(:@contexts).select { |c| c.is_a?(Course) }).to eq [c2]
+      expect(controller.instance_variable_get(:@contexts).grep(Course)).to eq [c2]
     end
 
     it "doesn't touch the database if there are no valid courses" do
@@ -2605,7 +2678,7 @@ RSpec.describe ApplicationController do
           @group.add_user(@user)
         end
         controller.send(:get_all_pertinent_contexts, include_groups: true, only_contexts: "group_#{@other_group.id},group_#{@group.id}")
-        expect(controller.instance_variable_get(:@contexts).select { |c| c.is_a?(Group) }).to eq [@group]
+        expect(controller.instance_variable_get(:@contexts).grep(Group)).to eq [@group]
       end
 
       it "does not include groups in courses the user doesn't have the ability to view yet" do
@@ -2614,14 +2687,14 @@ RSpec.describe ApplicationController do
 
         course_factory
         student_in_course(user: @user, course: @course)
-        expect(@course).to_not be_available
+        expect(@course).not_to be_available
         expect(@user.cached_currentish_enrollments).to be_empty
         @other_group = group_model(context: @course)
         group_model(context: @course)
         @group.add_user(@user)
 
         controller.send(:get_all_pertinent_contexts, include_groups: true)
-        expect(controller.instance_variable_get(:@contexts).select { |c| c.is_a?(Group) }).to be_empty
+        expect(controller.instance_variable_get(:@contexts).grep(Group)).to be_empty
       end
 
       it "must select all cross-shard courses the user belongs to" do
@@ -2662,7 +2735,7 @@ RSpec.describe ApplicationController do
                           only_contexts: "Course_#{course2.id}",
                         })
         contexts = controller.instance_variable_get(:@contexts)
-        expect(contexts).to_not include course1
+        expect(contexts).not_to include course1
         expect(contexts).to include course2
       end
     end
@@ -3081,6 +3154,57 @@ RSpec.describe ApplicationController do
         controller.params[:action] = "syllabus"
         expect(controller.send(:show_student_view_button?)).to be_falsey
       end
+    end
+  end
+
+  describe "show_learning_agent_button? helper" do
+    before(:once) do
+      course_with_student(active_all: true)
+    end
+
+    before do
+      user_session(@student)
+      controller.instance_variable_set(:@context, @course)
+      controller.instance_variable_set(:@context_enrollment, @enrollment)
+      controller.instance_variable_set(:@current_user, @student)
+    end
+
+    it "returns false when context is not a Course" do
+      controller.instance_variable_set(:@context, Account.default)
+      expect(controller.send(:show_learning_agent_button?)).to be false
+    end
+
+    it "returns false when enrollment is not a StudentEnrollment" do
+      controller.instance_variable_set(:@context_enrollment, nil)
+      expect(controller.send(:show_learning_agent_button?)).to be false
+    end
+
+    it "returns false when feature flag is off" do
+      @course.disable_feature!(:athena_learning_agent_button)
+      expect(controller.send(:show_learning_agent_button?)).to be false
+    end
+
+    it "returns true when all conditions are met" do
+      @course.enable_feature!(:athena_learning_agent_button)
+      expect(controller.send(:show_learning_agent_button?)).to be true
+    end
+  end
+
+  describe "load_learning_agent_env helper" do
+    before(:once) do
+      course_with_student(active_all: true)
+    end
+
+    before do
+      user_session(@student)
+      controller.instance_variable_set(:@current_user, @student)
+    end
+
+    it "sets ATHENA in js_env via public_app_config" do
+      config = { authenticated: true, launch_domain: "athena.example.com", launch_path: "/agent" }
+      allow(Services::Athena).to receive(:public_app_config).with(@student).and_return(config)
+      expect(controller).to receive(:js_env).with({ ATHENA: config })
+      controller.send(:load_learning_agent_env)
     end
   end
 
@@ -3912,6 +4036,8 @@ RSpec.describe ApplicationController, "#compute_http_cost" do
   include WebMock::API
 
   controller do
+    skip_before_action :require_user
+
     def index
       if params[:do_http].to_i > 0
         CanvasHttp.get("http://www.example.com/test")

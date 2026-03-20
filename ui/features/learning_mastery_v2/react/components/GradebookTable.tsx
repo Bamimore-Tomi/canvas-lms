@@ -48,9 +48,9 @@ import {BarChartRow} from './grid/BarChartRow'
 import {StudentOutcomeScore} from './grid/StudentOutcomeScore'
 import {keyBy} from 'es-toolkit'
 import {View} from '@instructure/ui-view'
-import {Table} from './table/Table'
+import {Table} from '@instructure/outcomes-ui/es/components/Gradebook/table/Table'
+import type {Column} from '@instructure/outcomes-ui/lib/components/Gradebook/table/Table'
 import {ContributingScoreCellContent} from './table/ContributingScoreCellContent'
-import {Column} from './table/utils'
 import {OutcomeDistribution} from '@canvas/outcomes/react/types/mastery_distribution'
 import WithBreakpoints, {Breakpoints} from '@canvas/with-breakpoints/src'
 
@@ -276,7 +276,7 @@ const GradebookTableComponent: React.FC<GradebookTableComponentProps> = ({
       colHeaderProps: {
         'data-testid': 'student-header',
         width: STUDENT_COLUMN_WIDTH + STUDENT_COLUMN_RIGHT_PADDING,
-        ariaLabelId: 'ilmgb-student-header',
+        'aria-labelledby': 'ilmgb-student-header',
         ...commonColHeaderProps,
       },
       cellProps: {
@@ -293,6 +293,7 @@ const GradebookTableComponent: React.FC<GradebookTableComponentProps> = ({
           header: renderOutcomeHeader(outcome, contributingScoreForOutcome, titleId),
           render: renderOutcomeCell(outcome),
           draggable: true,
+          dragLabel: outcome.title,
           data: {outcome},
           colHeaderProps: {
             'data-testid': `outcome-header-${outcome.id}`,
@@ -361,13 +362,15 @@ const GradebookTableComponent: React.FC<GradebookTableComponentProps> = ({
         <BarChartRow
           columns={_columns}
           outcomeDistributions={outcomeDistributions}
+          distributionStudents={distributionStudents}
+          courseId={courseId}
           isLoading={isLoadingDistribution}
           handleKeyDown={handleKeyDown}
           isMobile={isMobile}
         />
       )
     },
-    [outcomeDistributions, isLoadingDistribution, isMobile],
+    [outcomeDistributions, distributionStudents, courseId, isLoadingDistribution, isMobile],
   )
 
   const handleColumnMove = useCallback(

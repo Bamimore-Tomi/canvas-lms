@@ -109,6 +109,21 @@ describe Assignment do
     expect(@assignment.errors[:grading_type]).not_to be_nil
   end
 
+  it "versions attachment associations with the assignment" do
+    attachment_model(context: @course)
+    assignment = @course.assignments.create!(description: "file linke: <a href='/courses/#{@course.id}/files/#{@attachment.id}/download'>file</a>", updating_user: @teacher)
+    assignment.update(description: "meh")
+
+    expect(YAML.load(assignment.versions.find_by(number: 1).yaml)["attachment_associations"][0]).to include({
+                                                                                                              attachment_id: @attachment.id,
+                                                                                                              context_id: assignment.id,
+                                                                                                              context_type: "Assignment",
+                                                                                                              root_account_id: @course.root_account_id,
+                                                                                                              user_id: @teacher.id,
+                                                                                                              context_concern: nil
+                                                                                                            })
+  end
+
   describe "#question_count" do
     let(:assignment) { Assignment.new }
 
@@ -284,7 +299,7 @@ describe Assignment do
         assignment.update!(due_at: 1.day.from_now)
         expect(ScheduledSmartAlert.all).to include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
         assignment.update!(due_at: nil)
-        expect(ScheduledSmartAlert.all).to_not include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
+        expect(ScheduledSmartAlert.all).not_to include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
       end
 
       it "deletes the ScheduledSmartAlert if the due date is changed to the past" do
@@ -292,7 +307,7 @@ describe Assignment do
         assignment.update!(due_at: 1.day.from_now)
         expect(ScheduledSmartAlert.all).to include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
         assignment.update!(due_at: 1.day.ago)
-        expect(ScheduledSmartAlert.all).to_not include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
+        expect(ScheduledSmartAlert.all).not_to include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
       end
 
       it "deletes associated ScheduledSmartAlerts when the Assignment is deleted" do
@@ -302,8 +317,8 @@ describe Assignment do
         expect(ScheduledSmartAlert.all).to include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
         expect(ScheduledSmartAlert.all).to include(an_object_having_attributes(context_type: "AssignmentOverride", context_id: override.id))
         assignment.destroy
-        expect(ScheduledSmartAlert.all).to_not include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
-        expect(ScheduledSmartAlert.all).to_not include(an_object_having_attributes(context_type: "AssignmentOverride", context_id: override.id))
+        expect(ScheduledSmartAlert.all).not_to include(an_object_having_attributes(context_type: "Assignment", context_id: assignment.id))
+        expect(ScheduledSmartAlert.all).not_to include(an_object_having_attributes(context_type: "AssignmentOverride", context_id: override.id))
       end
     end
 
@@ -2648,10 +2663,10 @@ describe Assignment do
         group_two = @course.groups.create!(name: "Group A", group_category:)
         group_three = @course.groups.create!(name: "Group C", group_category:)
 
-        add_user_to_group(student_one, group_one, true)
-        add_user_to_group(student_two, group_two, true)
-        add_user_to_group(student_three, group_three, true)
-        add_user_to_group(@initial_student, group_three, true)
+        add_user_to_group(student_one, group_one, is_leader: true)
+        add_user_to_group(student_two, group_two, is_leader: true)
+        add_user_to_group(student_three, group_three, is_leader: true)
+        add_user_to_group(@initial_student, group_three, is_leader: true)
 
         assignment = @course.assignments.create!(
           assignment_valid_attributes.merge(
@@ -2720,8 +2735,8 @@ describe Assignment do
         group_one = @course.groups.create!(name: "Group B", group_category:)
         group_two = @course.groups.create!(name: "Group A", group_category:)
 
-        add_user_to_group(student_one, group_one, true)
-        add_user_to_group(student_two, group_two, true)
+        add_user_to_group(student_one, group_one, is_leader: true)
+        add_user_to_group(student_two, group_two, is_leader: true)
 
         assignment = @course.assignments.create!(
           assignment_valid_attributes.merge(
@@ -2844,10 +2859,10 @@ describe Assignment do
       group_two = @course.groups.create!(name: "Group A", group_category:)
       group_three = @course.groups.create!(name: "Group C", group_category:)
 
-      add_user_to_group(student_one, group_one, true)
-      add_user_to_group(student_two, group_two, true)
-      add_user_to_group(student_three, group_three, true)
-      add_user_to_group(@initial_student, group_three, true)
+      add_user_to_group(student_one, group_one, is_leader: true)
+      add_user_to_group(student_two, group_two, is_leader: true)
+      add_user_to_group(student_three, group_three, is_leader: true)
+      add_user_to_group(@initial_student, group_three, is_leader: true)
 
       assignment = @course.assignments.create!(
         assignment_valid_attributes.merge(
@@ -2974,7 +2989,7 @@ describe Assignment do
       @assignment.update!(due_at: 2.days.from_now, lock_at: 3.days.from_now)
       @assignment.reload
       decoded = Canvas::Security.decode_jwt(@assignment.secure_params)
-      expect(decoded).to_not include(:description)
+      expect(decoded).not_to include(:description)
     end
 
     it "does not contain the description when the assignment is locked" do
@@ -3108,7 +3123,7 @@ describe Assignment do
       @assignment.grade_student(@student, grade: 10, grader: @teacher)
       @submission = @assignment.grade_student(@student, grade: nil, grader: @teacher).first
 
-      expect(@submission.workflow_state).to_not eq("unsubmitted")
+      expect(@submission.workflow_state).not_to eq("unsubmitted")
     end
   end
 
@@ -4321,13 +4336,13 @@ describe Assignment do
       expect(@submission.user_id).to eql(@user.id)
     end
 
-    context "when force_letter_grade(the third argument of score_to_grade) is true" do
+    context "when force_letter_grade is true" do
       it "returns letter grading standard grade for points" do
         @assignment.grading_type = "points"
         @assignment.points_possible = 10
         @assignment.save!
         submission = @assignment.grade_student(@user, grade: "9", grader: @teacher).first
-        expect(@assignment.score_to_grade(submission.score, submission.grade, true)).to eq "A-"
+        expect(@assignment.score_to_grade(submission.score, submission.grade, force_letter_grade: true)).to eq "A-"
       end
 
       it "returns 'complete' for 0/0" do
@@ -4335,7 +4350,7 @@ describe Assignment do
         @assignment.points_possible = 0
         @assignment.save!
         submission = @assignment.grade_student(@user, grade: "0", grader: @teacher).first
-        expect(@assignment.score_to_grade(submission.score, submission.grade, true)).to eq "complete"
+        expect(@assignment.score_to_grade(submission.score, submission.grade, force_letter_grade: true)).to eq "complete"
       end
 
       it "returns given grade for -1/0" do
@@ -4343,7 +4358,7 @@ describe Assignment do
         @assignment.points_possible = 0
         @assignment.save!
         submission = @assignment.grade_student(@user, grade: -1, grader: @teacher).first
-        expect(@assignment.score_to_grade(submission.score, submission.grade, true)).to eq "-1"
+        expect(@assignment.score_to_grade(submission.score, submission.grade, force_letter_grade: true)).to eq "-1"
       end
 
       it "returns highest grading scheme grade when 1/0" do
@@ -4351,7 +4366,7 @@ describe Assignment do
         @assignment.points_possible = 0
         @assignment.save!
         submission = @assignment.grade_student(@user, grade: 1, grader: @teacher).first
-        expect(@assignment.score_to_grade(submission.score, submission.grade, true)).to eq "A"
+        expect(@assignment.score_to_grade(submission.score, submission.grade, force_letter_grade: true)).to eq "A"
       end
     end
 
@@ -10197,6 +10212,53 @@ describe Assignment do
         expect(assignment).to be_valid
       end
     end
+
+    context "compatibility with legacy and graded peer review modes" do
+      before :once do
+        @course.enable_feature!(:peer_review_allocation_and_grading)
+        @assignment_with_graded_peer_reviews = @course.assignments.create!(
+          name: "assignment with graded peer reviews",
+          peer_reviews: true
+        )
+        peer_review_model(parent_assignment: @assignment_with_graded_peer_reviews)
+        @course.disable_feature!(:peer_review_allocation_and_grading)
+        @assignment_with_legacy_peer_reviews = @course.assignments.create!(
+          name: "assignment with legacy peer reviews",
+          peer_reviews: true
+        )
+      end
+
+      context "when in legacy mode" do
+        it "prevents disabling peer reviews for assignments with graded peer reviews" do
+          @assignment_with_graded_peer_reviews.peer_reviews = false
+          expect(@assignment_with_graded_peer_reviews).not_to be_valid
+          expect(@assignment_with_graded_peer_reviews.errors[:peer_reviews]).to include(
+            "cannot be disabled for assignments with graded peer reviews in legacy mode"
+          )
+        end
+
+        it "allows disabling peer reviews for assignments with legacy peer reviews" do
+          @assignment_with_legacy_peer_reviews.peer_reviews = false
+          expect(@assignment_with_legacy_peer_reviews).to be_valid
+        end
+      end
+
+      context "when in graded mode" do
+        before :once do
+          @course.enable_feature!(:peer_review_allocation_and_grading)
+        end
+
+        it "allows disabling peer reviews for assignments with graded peer reviews" do
+          @assignment_with_graded_peer_reviews.peer_reviews = false
+          expect(@assignment_with_graded_peer_reviews).to be_valid
+        end
+
+        it "allows disabling peer reviews for assignments with legacy peer reviews" do
+          @assignment_with_legacy_peer_reviews.peer_reviews = false
+          expect(@assignment_with_legacy_peer_reviews).to be_valid
+        end
+      end
+    end
   end
 
   describe "anonymous grading validation" do
@@ -11161,13 +11223,13 @@ describe Assignment do
           it "does not call refresh_course_content_participation_counts when not changing to a trigger workflow_state" do
             assignment.workflow_state = "duplicating"
             assignment.save!
-            expect(assignment).to_not receive(:refresh_course_content_participation_counts)
+            expect(assignment).not_to receive(:refresh_course_content_participation_counts)
           end
 
           it "does not call refresh_course_content_participation_counts when changing something other than workflow_state" do
             assignment.title = "New Title"
             assignment.save!
-            expect(assignment).to_not receive(:refresh_course_content_participation_counts)
+            expect(assignment).not_to receive(:refresh_course_content_participation_counts)
           end
         end
 
@@ -11196,13 +11258,13 @@ describe Assignment do
           it "does not call refresh_course_content_participation_counts when not changing to something other than not_graded" do
             assignment.submission_types = "on_paper"
             assignment.save!
-            expect(assignment).to_not receive(:refresh_course_content_participation_counts)
+            expect(assignment).not_to receive(:refresh_course_content_participation_counts)
           end
 
           it "does not call refresh_course_content_participation_counts when changing something other than submission_types" do
             assignment.title = "New Title"
             assignment.save!
-            expect(assignment).to_not receive(:refresh_course_content_participation_counts)
+            expect(assignment).not_to receive(:refresh_course_content_participation_counts)
           end
         end
       end
@@ -11723,7 +11785,7 @@ describe Assignment do
       @assignment.omit_from_final_grade = true
       @assignment.points_possible = 10
 
-      expect(@assignment).to_not be_valid
+      expect(@assignment).not_to be_valid
     end
 
     it "disallows hide_in_gradebook to be set to true if omit_from_final_grade is false" do
@@ -11731,14 +11793,14 @@ describe Assignment do
       @assignment.omit_from_final_grade = false
       @assignment.points_possible = 0
 
-      expect(@assignment).to_not be_valid
+      expect(@assignment).not_to be_valid
     end
 
     it "disallows hide_in_gradebook to be set to anything other than a boolean" do
       @assignment.hide_in_gradebook = 2
-      expect(@assignment).to_not be_valid
+      expect(@assignment).not_to be_valid
       @assignment.hide_in_gradebook = nil
-      expect(@assignment).to_not be_valid
+      expect(@assignment).not_to be_valid
     end
   end
 
@@ -11754,12 +11816,12 @@ describe Assignment do
 
     it "disallows 0" do
       @assignment.allowed_attempts = 0
-      expect(@assignment).to_not be_valid
+      expect(@assignment).not_to be_valid
     end
 
     it "disallows values less than -1" do
       @assignment.allowed_attempts = -2
-      expect(@assignment).to_not be_valid
+      expect(@assignment).not_to be_valid
     end
 
     it "allows values greater than 0" do
@@ -13067,6 +13129,27 @@ describe Assignment do
       @parent.update!(grading_type: "pass_fail")
       expect(@first_checkpoint.reload.grading_type).to eq "pass_fail"
       expect(@second_checkpoint.reload.grading_type).to eq "pass_fail"
+    end
+
+    describe "#ensure_post_policy" do
+      it "syncs post_manually to all sub_assignments when set to true" do
+        @parent.ensure_post_policy(post_manually: true)
+        expect(@first_checkpoint.post_policy.reload.post_manually).to be true
+        expect(@second_checkpoint.post_policy.reload.post_manually).to be true
+      end
+
+      it "syncs post_manually to all sub_assignments when set to false" do
+        @parent.ensure_post_policy(post_manually: true)
+        @parent.ensure_post_policy(post_manually: false)
+        expect(@first_checkpoint.post_policy.reload.post_manually).to be false
+        expect(@second_checkpoint.post_policy.reload.post_manually).to be false
+      end
+
+      it "does not sync to sub_assignments when the assignment has none" do
+        assignment = @course.assignments.create!
+        expect { assignment.ensure_post_policy(post_manually: true) }.not_to raise_error
+        expect(assignment.post_policy.post_manually).to be true
+      end
     end
 
     it "will update the sub_assignment lock_at and unlock_at when parent updates" do

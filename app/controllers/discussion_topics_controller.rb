@@ -270,6 +270,7 @@
 #
 class DiscussionTopicsController < ApplicationController
   before_action :require_context_and_read_access, except: :public_feed
+  skip_before_action :require_user, only: %i[public_feed show]
 
   include HorizonMode
 
@@ -431,7 +432,11 @@ class DiscussionTopicsController < ApplicationController
             locked = topic.locked? || topic.locked_for?(@current_user)
             locked.is_a?(Hash) ? locked[:can_view] : locked
           end
-          js_env openTopics: open_topics, lockedTopics: locked_topics, newTopicURL: named_context_url(@context, :new_context_discussion_topic_url)
+          js_env({
+                   openTopics: open_topics,
+                   lockedTopics: locked_topics,
+                   newTopicURL: named_context_url(@context, :new_context_discussion_topic_url)
+                 })
         end
 
         fetch_params = {
@@ -502,7 +507,7 @@ class DiscussionTopicsController < ApplicationController
         set_tutorial_js_env
 
         if user_can_edit_course_settings?
-          js_env(SETTINGS_URL: named_context_url(@context, :api_v1_context_settings_url))
+          js_env({ SETTINGS_URL: named_context_url(@context, :api_v1_context_settings_url) })
         end
 
         @page_title = join_title(t("#titles.discussions", "Discussions"), @context.name)
@@ -655,8 +660,8 @@ class DiscussionTopicsController < ApplicationController
       GROUP_CONTEXT_TYPE: @context.is_a?(Group) ? @context.context.class.name : nil,
       DISCUSSION_TOPIC: hash,
       GROUP_CATEGORIES: categories
-              .reject { |c| c.student_organized? || c.non_collaborative? }
-              .map { |category| { id: category.id, name: category.name } },
+                        .reject { |c| c.student_organized? || c.non_collaborative? }
+                        .map { |category| { id: category.id, name: category.name } },
       ALLOW_ASSIGN_TO_DIFFERENTIATION_TAGS: assign_to_tags,
       CAN_MANAGE_DIFFERENTIATION_TAGS: @context.grants_any_right?(@current_user, session, *RoleOverride::GRANULAR_MANAGE_TAGS_PERMISSIONS),
       HAS_GRADING_PERIODS: @context.grading_periods?,
@@ -924,7 +929,7 @@ class DiscussionTopicsController < ApplicationController
              DISCUSSION_DEFAULT_EXPAND_ENABLED: true, # this is to avoid a small p4 on release
              DISCUSSION_DEFAULT_SORT_ENABLED: true, # this is to avoid a small p4 on release
              restore_discussion_entry: context.feature_enabled?(:restore_discussion_entry),
-             enhanced_rubrics_enabled: @context.feature_enabled?(:enhanced_rubrics),
+             enhanced_rubrics_enabled: @context.is_a?(Course) && @context.feature_enabled?(:enhanced_rubrics),
              PERMISSIONS: {
                manage_rubrics: @context.grants_right?(@current_user, session, :manage_rubrics),
              },
@@ -937,7 +942,7 @@ class DiscussionTopicsController < ApplicationController
 
     asset_processor_eula_js_env_for_discussion
 
-    enhanced_rubrics_assignments_js_env(@topic.assignment) if @topic.assignment.present? && @context.feature_enabled?(:enhanced_rubrics)
+    enhanced_rubrics_assignments_js_env(@topic.assignment) if @topic.assignment.present? && @context.is_a?(Course) && @context.feature_enabled?(:enhanced_rubrics)
 
     js_bundle :discussion_topics_post
     css_bundle :discussions_index, :learning_outcomes, :enhanced_rubrics
@@ -945,6 +950,7 @@ class DiscussionTopicsController < ApplicationController
     respond_to do |format|
       format.html do
         conditional_release_js_env(@topic.assignment)
+        add_body_class("mobile-embed") if params[:embed] == "true"
         render html: "", layout: (params[:embed] == "true") ? "mobile_embed" : true
       end
     end
@@ -1336,14 +1342,16 @@ class DiscussionTopicsController < ApplicationController
 
     visibilities = @context.course_section_visibility(@current_user)
 
+    section_ids = @topic.course_sections.map(&:id)
+    active_section_ids = @context.active_course_sections.where(id: section_ids).pluck(:id)
     invalid_sections =
       case visibilities
       when :all
         []
       when :none
-        @topic.course_sections.map(&:id)
+        active_section_ids
       else
-        @topic.course_sections.map(&:id) - visibilities
+        active_section_ids - visibilities
       end
 
     unless invalid_sections.empty?
@@ -1915,7 +1923,7 @@ class DiscussionTopicsController < ApplicationController
         @context.course_sections.select { |s| s.active? && section_visibilities.include?(s.id) }
       end
 
-    js_env SECTION_LIST: sections.map { |section|
+    js_env({ SECTION_LIST: sections.map do |section|
       {
         id: section.id,
         name: section.name,
@@ -1923,7 +1931,7 @@ class DiscussionTopicsController < ApplicationController
         end_at: section.end_at,
         override_course_and_term_dates: section.restrict_enrollments_to_section_dates
       }
-    }
+    end })
   end
 
   def mutate_js_hash_sections_for_show_method(js_hash, topic)
@@ -1984,6 +1992,6 @@ class DiscussionTopicsController < ApplicationController
 
     # For graded discussions, delegate to the assignment's asset processors
     urls = Lti::EulaUiService.eula_launch_urls(user: @current_user, assignment: @topic.assignment)
-    js_env ASSET_PROCESSOR_EULA_LAUNCH_URLS: urls
+    js_env({ ASSET_PROCESSOR_EULA_LAUNCH_URLS: urls })
   end
 end

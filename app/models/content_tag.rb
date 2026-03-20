@@ -311,7 +311,7 @@ class ContentTag < ActiveRecord::Base
     direct_share_type.pluralize
   end
 
-  def content_type_class(is_student = false)
+  def content_type_class(is_student: false)
     case content_type
     when "Assignment"
       if content && content.submission_types == "online_quiz"
@@ -620,7 +620,11 @@ class ContentTag < ActiveRecord::Base
 
   scope :visible_to_students_in_course_with_da, lambda { |user_ids, course_ids|
     differentiable_classes = ["Assignment", "DiscussionTopic", "Quiz", "Quizzes::Quiz", "WikiPage"]
+    visible_module_ids = ModuleVisibility::ModuleVisibilityService
+                         .modules_visible_to_students(user_ids:, course_ids:)
+                         .map(&:context_module_id)
     scope = for_non_differentiable_classes(course_ids, differentiable_classes)
+            .where(context_module_id: visible_module_ids)
 
     visible_page_ids = WikiPage.visible_to_students_in_course_with_da(user_ids, course_ids).select(:id)
     scope = scope.union(where(content_id: visible_page_ids, context_id: course_ids, context_type: "Course", content_type: "WikiPage"))
@@ -732,10 +736,10 @@ class ContentTag < ActiveRecord::Base
       .where(id: ids)
       .preload(:associated_asset, :context)
       .find_each do |item|
-        possible_tool = Lti::ToolFinder.from_url(item.url, item.context, exclude_tool_id: new_tool_id)
-        next if possible_tool.nil? || possible_tool.id != tool_id
+      possible_tool = Lti::ToolFinder.from_url(item.url, item.context, exclude_tool_id: new_tool_id)
+      next if possible_tool.nil? || possible_tool.id != tool_id
 
-        yield item
+      yield item
     end
   end
 
