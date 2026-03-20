@@ -29,8 +29,8 @@ log "Running migrations..."
 bundle exec rake db:migrate
 
 log "Checking if initial setup is required..."
-if bundle exec rails runner 'exit(Account.exists? ? 0 : 1)'; then
-  log "Accounts exist, skipping db:initial_setup"
+if bundle exec rails runner 'exit(Account.default.present? ? 0 : 1)'; then
+  log "Default account exists, skipping db:initial_setup"
 else
   log "Running db:initial_setup (first-time setup)"
   bundle exec rake db:initial_setup
@@ -38,7 +38,7 @@ fi
 
 if [[ -n "${CANVAS_PRODUCT_NAME:-}" ]]; then
   log "Setting product name to '${CANVAS_PRODUCT_NAME}'"
-  bundle exec rails runner 'a=Account.default; s=a.settings; s[:product_name]=ENV["CANVAS_PRODUCT_NAME"]; a.update!(settings: s)'
+  bundle exec rails runner 'a=Account.default; if a; s=a.settings; s[:product_name]=ENV["CANVAS_PRODUCT_NAME"]; a.update!(settings: s); end'
 fi
 
 log "Init complete"
