@@ -1,4 +1,4 @@
-version: "3.8"
+version: "2.4"
 
 services:
   web:
@@ -18,8 +18,12 @@ services:
       CANVAS_FILES_DOMAIN: ${CANVAS_FILES_DOMAIN:-}
       CANVAS_PRODUCT_NAME: ${CANVAS_PRODUCT_NAME:-}
     depends_on:
-      - postgres
-      - redis
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
     expose:
       - "80"
     volumes:
@@ -35,8 +39,12 @@ services:
     command: bundle exec script/delayed_job run
     environment: *canvas-env
     depends_on:
-      - postgres
-      - redis
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
     volumes:
       - brandable_css:/usr/src/app/public/dist/brandable_css
       - file_store:/usr/src/app/tmp/files
@@ -50,8 +58,10 @@ services:
     command: /usr/src/app/script/coolify/init.sh
     environment: *canvas-env
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
     restart: "no"
     volumes:
       - brandable_css:/usr/src/app/public/dist/brandable_css
