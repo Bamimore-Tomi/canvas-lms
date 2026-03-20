@@ -44,3 +44,17 @@ EOF2
   fi
 fi
 
+# Allow HTTP deployments by disabling force_ssl in production when requested.
+if [[ "${CANVAS_DOMAIN_SSL:-true}" == "false" ]]; then
+  local_env_dir="$CONFIG_DIR/environments"
+  local_env_file="$local_env_dir/production-local.rb"
+  if [[ ! -f "$local_env_file" ]]; then
+    log "writing environments/production-local.rb to disable force_ssl"
+    mkdir -p "$local_env_dir"
+    cat > "$local_env_file" <<'EOF2'
+CanvasRails::Application.configure do
+  config.force_ssl = false
+end
+EOF2
+  fi
+fi
