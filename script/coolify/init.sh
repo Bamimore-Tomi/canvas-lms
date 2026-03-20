@@ -19,6 +19,9 @@ EOF
   fi
 fi
 
+log "Ensuring config files exist..."
+/usr/src/app/script/coolify/configure.sh
+
 log "Creating database if needed..."
 bundle exec rake db:create
 

@@ -27,6 +27,7 @@ services:
       - file_store:/usr/src/app/tmp/files
       - log:/usr/src/app/log
       - tmp:/usr/src/app/tmp
+      - config:/usr/src/app/config
 
   jobs:
     image: ${CANVAS_IMAGE_NAME:-canvas-lms}
@@ -41,6 +42,7 @@ services:
       - file_store:/usr/src/app/tmp/files
       - log:/usr/src/app/log
       - tmp:/usr/src/app/tmp
+      - config:/usr/src/app/config
 
   init:
     image: ${CANVAS_IMAGE_NAME:-canvas-lms}
@@ -56,6 +58,7 @@ services:
       - file_store:/usr/src/app/tmp/files
       - log:/usr/src/app/log
       - tmp:/usr/src/app/tmp
+      - config:/usr/src/app/config
 
   postgres:
     image: postgres:14
@@ -71,6 +74,7 @@ services:
 
 volumes:
   brandable_css: {}
+  config: {}
   file_store: {}
   log: {}
   pg_data: {}
